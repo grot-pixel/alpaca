@@ -56,10 +56,11 @@ def main():
                         qty=qty,
                         side="buy",
                         type="market",
-                        time_in_force="day",  # allows extended hours
+                        time_in_force="day",
                         order_class="bracket",
                         take_profit={"limit_price": take_profit_price},
-                        stop_loss={"stop_price": stop_loss_price}
+                        stop_loss={"stop_price": stop_loss_price},
+                        extended_hours=True  # ENABLES PRE/POST-MARKET
                     )
                     print(f"BUY {qty} {symbol} @ {last_price:.2f}, TP {take_profit_price}, SL {stop_loss_price}")
 
@@ -69,7 +70,8 @@ def main():
                     qty=position,
                     side="sell",
                     type="market",
-                    time_in_force="day"
+                    time_in_force="day",
+                    extended_hours=True  # ENABLES PRE/POST-MARKET
                 )
                 print(f"SELL {position} {symbol}")
 
