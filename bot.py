@@ -49,16 +49,23 @@ def main():
                 last_price = df.iloc[-1]["close"]
                 qty = int(trade_size / last_price)
                 if qty > 0:
+                    take_profit_price = round(last_price * (1 + config["take_profit_pct"]), 2)
+                    stop_loss_price = round(last_price * (1 - config["stop_loss_pct"]), 2)
+
                     api.submit_order(
                         symbol=symbol,
                         qty=qty,
                         side="buy",
                         type="market",
-                        time_in_force="day"
+                        time_in_force="gtc",
+                        order_class="bracket",
+                        take_profit={"limit_price": take_profit_price},
+                        stop_loss={"stop_price": stop_loss_price}
                     )
-                    print(f"BUY {qty} {symbol}")
+                    print(f"BUY {qty} {symbol} @ {last_price:.2f}, TP {take_profit_price}, SL {stop_loss_price}")
 
             elif signal == "sell" and position > 0:
+                # Close position immediately (overrides open brackets if needed)
                 api.submit_order(
                     symbol=symbol,
                     qty=position,
