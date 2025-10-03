@@ -1,32 +1,38 @@
-name: Aggressive Trading Bot
+name: Alpaca Multi-Account Bot
 
+# Run on every weekday at 4:00 AM ET and every 5 minutes during market hours (9:30 AM – 4:00 PM ET)
 on:
   schedule:
-    # Pre-market 4:00–9:30 ET (08:00–13:30 UTC)
-    - cron: "*/5 8-13 * * 1-5"
-    # Regular market 9:30–16:00 ET (13:30–20:00 UTC)
-    - cron: "*/5 13-20 * * 1-5"
-    # After-hours 16:00–20:00 ET (20:00–00:00 UTC)
-    - cron: "*/5 20-23,0 * * 1-5"
-  workflow_dispatch:  # manual run option
+    # Pre-market: 4:00 AM ET
+    - cron: '0 8 * * 1-5'  
+    # Market hours: every 5 minutes
+    - cron: '*/5 13-21 * * 1-5'  
 
 jobs:
-  trade:
+  run-bot:
     runs-on: ubuntu-latest
+    env:
+      # Pull secrets for Account 1
+      APCA_API_KEY_1: ${{ secrets.APCA_API_KEY_1 }}
+      APCA_API_SECRET_1: ${{ secrets.APCA_API_SECRET_1 }}
+      APCA_BASE_URL_1: ${{ secrets.APCA_BASE_URL_1 }}
+      # Pull secrets for Account 2
+      APCA_API_KEY_2: ${{ secrets.APCA_API_KEY_2 }}
+      APCA_API_SECRET_2: ${{ secrets.APCA_API_SECRET_2 }}
+      APCA_BASE_URL_2: ${{ secrets.APCA_BASE_URL_2 }}
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.10"
+          python-version: '3.10'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: Run bot
-        env:
-          APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
-          APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
-          APCA_API_BASE_URL: ${{ secrets.APCA_API_BASE_URL }}
+      - name: Run Alpaca Bot
         run: python bot.py
