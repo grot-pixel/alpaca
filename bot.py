@@ -7,7 +7,7 @@ import pytz
 # --- Example signal logic ---
 def generate_signal(symbol, api):
     try:
-        # Fetch last 2 minute bars (regular + extended hours)
+        # Fetch last 2 minute bars
         bars = api.get_bars(symbol, TimeFrame.Minute, limit=2).df
         if len(bars) < 2:
             print(f"Not enough data for {symbol}, skipping signal.")
@@ -67,7 +67,15 @@ def trade_account(account_info):
         else:
             print(f"[{symbol}] No signal.")
 
-        # Only place orders during market hours
+        # --- Pre-market / After-hours logging ---
+        if not is_market_open() and signal:
+            # Log signals without submitting orders
+            with open(f"{name}_watchlist_log.csv", "a") as f:
+                now_str = datetime.now(pytz.timezone('US/Eastern')).strftime("%Y-%m-%d %H:%M:%S")
+                f.write(f"{now_str},{symbol},{signal}\n")
+            print(f"[{symbol}] Market closed, signal logged for analysis.")
+
+        # --- Place orders only during regular market hours ---
         if is_market_open() and signal:
             try:
                 if signal == 'buy':
@@ -81,9 +89,6 @@ def trade_account(account_info):
                     print(f"[{symbol}] SELL order submitted: {qty} shares")
             except Exception as e:
                 print(f"[{symbol}] Error submitting order: {e}")
-        else:
-            if signal:
-                print(f"[{symbol}] Market closed, order skipped.")
 
 # --- Load secrets and initialize accounts ---
 accounts = []
