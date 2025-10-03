@@ -4,13 +4,28 @@ import alpaca_trade_api as tradeapi
 import pandas as pd
 from utils import generate_signals
 
-# Load config and accounts
+# Config file for symbols, max allocation, etc.
 with open("config.json") as f:
     config = json.load(f)
 
-with open("accounts.json") as f:
-    accounts_list = json.load(f)
+# Define accounts using secret environment variables
+accounts_list = [
+    {
+        "name": "PaperAccount1",
+        "api_key": os.getenv("APCA_API_KEY_1"),
+        "api_secret": os.getenv("APCA_API_SECRET_1"),
+        "base_url": os.getenv("APCA_BASE_URL_1", "https://paper-api.alpaca.markets")
+    },
+    {
+        "name": "PaperAccount2",
+        "api_key": os.getenv("APCA_API_KEY_2"),
+        "api_secret": os.getenv("APCA_API_SECRET_2"),
+        "base_url": os.getenv("APCA_BASE_URL_2", "https://paper-api.alpaca.markets")
+    }
+    # Add more accounts here as needed
+]
 
+# Fetch price data
 def fetch_data(api, symbol, limit=100):
     bars = api.get_bars(symbol, "1Min", limit=limit)
     df = pd.DataFrame([{
@@ -23,6 +38,7 @@ def fetch_data(api, symbol, limit=100):
     } for bar in bars])
     return df
 
+# Trade logic
 def trade_account(account_info):
     print(f"\n=== Trading for {account_info['name']} ===")
     api = tradeapi.REST(
