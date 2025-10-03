@@ -1,15 +1,12 @@
 import os
 from alpaca_trade_api.rest import REST, TimeFrame
 import pandas as pd
-from datetime import datetime
-import pytz
 
-# --- Example signal logic ---
+# --- Example signal logic (4 bars) ---
 def generate_signal(symbol, api):
     try:
-        # Fetch last 2 minute bars
-        bars = api.get_bars(symbol, TimeFrame.Minute, limit=2).df
-        if len(bars) < 2:
+        bars = api.get_bars(symbol, TimeFrame.Minute, limit=4).df
+        if len(bars) < 4:
             print(f"Not enough data for {symbol}, skipping signal.")
             return None
         last_close = bars['close'][-1]
@@ -23,15 +20,6 @@ def generate_signal(symbol, api):
     except Exception as e:
         print(f"Error generating signal for {symbol}: {e}")
         return None
-
-# --- Check if market is open ---
-def is_market_open():
-    est = pytz.timezone('US/Eastern')
-    now = datetime.now(est)
-    # Market hours: 9:30–16:00 EST
-    if now.weekday() < 5 and ((now.hour == 9 and now.minute >= 30) or (9 < now.hour < 16)):
-        return True
-    return False
 
 # --- Trade function for one account ---
 def trade_account(account_info):
@@ -61,34 +49,22 @@ def trade_account(account_info):
 
     # Loop through symbols
     for symbol in symbols:
-        signal = generate_signal(symbol, api)
-        if signal:
-            print(f"[{symbol}] Signal generated: {signal.upper()}")
-        else:
-            print(f"[{symbol}] No signal.")
-
-        # --- Pre-market / After-hours logging ---
-        if not is_market_open() and signal:
-            # Log signals without submitting orders
-            with open(f"{name}_watchlist_log.csv", "a") as f:
-                now_str = datetime.now(pytz.timezone('US/Eastern')).strftime("%Y-%m-%d %H:%M:%S")
-                f.write(f"{now_str},{symbol},{signal}\n")
-            print(f"[{symbol}] Market closed, signal logged for analysis.")
-
-        # --- Place orders only during regular market hours ---
-        if is_market_open() and signal:
-            try:
-                if signal == 'buy':
-                    print(f"[{symbol}] Market open, submitting BUY order")
-                    api.submit_order(symbol, 1, 'buy', 'market', 'day')
-                    print(f"[{symbol}] BUY order submitted: 1 share")
-                elif signal == 'sell' and positions.get(symbol, 0) > 0:
-                    qty = positions[symbol]
-                    print(f"[{symbol}] Market open, submitting SELL order")
-                    api.submit_order(symbol, qty, 'sell', 'market', 'day')
-                    print(f"[{symbol}] SELL order submitted: {qty} shares")
-            except Exception as e:
-                print(f"[{symbol}] Error submitting order: {e}")
+        try:
+            signal = generate_signal(symbol, api)
+            if signal == 'buy':
+                print(f"[{symbol}] Signal: BUY")
+                # Example order: buy 1 share; replace with your logic
+                api.submit_order(symbol, 1, 'buy', 'market', 'day')  # extended hours disabled
+                print(f"[{symbol}] Order submitted: BUY 1 share")
+            elif signal == 'sell' and positions.get(symbol, 0) > 0:
+                print(f"[{symbol}] Signal: SELL")
+                qty = positions[symbol]
+                api.submit_order(symbol, qty, 'sell', 'market', 'day')  # extended hours disabled
+                print(f"[{symbol}] Order submitted: SELL {qty} shares")
+            else:
+                print(f"[{symbol}] No signal, skipping.")
+        except Exception as e:
+            print(f"[{symbol}] Error processing symbol: {e}")
 
 # --- Load secrets and initialize accounts ---
 accounts = []
@@ -103,7 +79,8 @@ for i in [1, 2]:  # support multiple accounts
 
     try:
         api = REST(key, secret, base)
-        api.get_account()  # test connection
+        # test connection
+        api.get_account()
         print(f"Account {i} connected successfully.")
         accounts.append({
             "name": f"PaperAccount{i}",
