@@ -16,7 +16,7 @@ BASE_URL = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
 api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version="v2")
 
 def fetch_data(symbol, limit=100):
-    barset = api.get_bars(symbol, "1Min", limit=limit)
+    bars = api.get_bars(symbol, "1Min", limit=limit)
     df = pd.DataFrame([{
         "time": bar.t,
         "open": bar.o,
@@ -24,14 +24,13 @@ def fetch_data(symbol, limit=100):
         "low": bar.l,
         "close": bar.c,
         "volume": bar.v
-    } for bar in barset])
+    } for bar in bars])
     return df
 
 def main():
     account = api.get_account()
     cash = float(account.cash)
     equity = float(account.equity)
-
     positions = {p.symbol: float(p.qty) for p in api.list_positions()}
 
     for symbol in config["symbols"]:
@@ -57,7 +56,7 @@ def main():
                         qty=qty,
                         side="buy",
                         type="market",
-                        time_in_force="gtc",
+                        time_in_force="day",  # allows extended hours
                         order_class="bracket",
                         take_profit={"limit_price": take_profit_price},
                         stop_loss={"stop_price": stop_loss_price}
@@ -65,7 +64,6 @@ def main():
                     print(f"BUY {qty} {symbol} @ {last_price:.2f}, TP {take_profit_price}, SL {stop_loss_price}")
 
             elif signal == "sell" and position > 0:
-                # Close position immediately (overrides open brackets if needed)
                 api.submit_order(
                     symbol=symbol,
                     qty=position,
