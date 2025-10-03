@@ -4,18 +4,14 @@ import alpaca_trade_api as tradeapi
 import pandas as pd
 from utils import generate_signals
 
-# Load config
+# Load config and accounts
 with open("config.json") as f:
     config = json.load(f)
 
-# Alpaca auth
-API_KEY = os.getenv("APCA_API_KEY_ID")
-API_SECRET = os.getenv("APCA_API_SECRET_KEY")
-BASE_URL = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
+with open("accounts.json") as f:
+    accounts_list = json.load(f)
 
-api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version="v2")
-
-def fetch_data(symbol, limit=100):
+def fetch_data(api, symbol, limit=100):
     bars = api.get_bars(symbol, "1Min", limit=limit)
     df = pd.DataFrame([{
         "time": bar.t,
@@ -27,7 +23,15 @@ def fetch_data(symbol, limit=100):
     } for bar in bars])
     return df
 
-def main():
+def trade_account(account_info):
+    print(f"\n=== Trading for {account_info['name']} ===")
+    api = tradeapi.REST(
+        account_info["api_key"],
+        account_info["api_secret"],
+        account_info.get("base_url", "https://paper-api.alpaca.markets"),
+        api_version="v2"
+    )
+
     account = api.get_account()
     cash = float(account.cash)
     equity = float(account.equity)
@@ -38,7 +42,7 @@ def main():
 
     for symbol in config["symbols"]:
         try:
-            df = fetch_data(symbol)
+            df = fetch_data(api, symbol)
             signal = generate_signals(df, config)
 
             if signal:
@@ -73,7 +77,7 @@ def main():
                         order_class="bracket",
                         take_profit={"limit_price": take_profit_price},
                         stop_loss={"stop_price": stop_loss_price},
-                        extended_hours=True  # ENABLED
+                        extended_hours=True
                     )
                     print(f"Placed BUY {qty} {symbol} @ {last_price:.2f}, TP {take_profit_price}, SL {stop_loss_price}")
 
@@ -87,12 +91,13 @@ def main():
                         side="sell",
                         type="market",
                         time_in_force="day",
-                        extended_hours=True  # ENABLED
+                        extended_hours=True
                     )
                     print(f"Placed SELL {position} {symbol} @ {last_price:.2f}")
 
         except Exception as e:
-            print(f"Error processing {symbol}: {e}")
+            print(f"Error processing {symbol} for {account_info['name']}: {e}")
 
 if __name__ == "__main__":
-    main()
+    for account_info in accounts_list:
+        trade_account(account_info)
