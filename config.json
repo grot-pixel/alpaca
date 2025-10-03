@@ -1,0 +1,12 @@
+{
+  "symbols": ["TQQQ", "SOXL", "AAPL", "TSLA", "AMD", "NVDA"],
+  "max_position_pct": 0.2,
+  "max_trade_pct": 0.15,
+  "stop_loss_pct": 0.03,
+  "take_profit_pct": 0.07,
+  "rsi_period": 14,
+  "rsi_overbought": 70,
+  "rsi_oversold": 30,
+  "sma_fast": 10,
+  "sma_slow": 30
+}
