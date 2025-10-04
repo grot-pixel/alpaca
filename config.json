@@ -1,5 +1,5 @@
 {
-  "symbols": ["TQQQ", "SOXL", "AAPL", "TSLA", "AMD", "NVDA"],
+  "symbols": ["TQQQ", "SOXL", "AAPL", "TSLA", "AMD", "NVDA", "UUUU", "MP", "UURAF", "METC", "NB", "ABAT", "USAR", "LYSDY"],
   "max_position_pct": 0.2,
   "max_trade_pct": 0.15,
   "stop_loss_pct": 0.03,
