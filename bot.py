@@ -2,7 +2,6 @@ import os
 import json
 from datetime import datetime, timezone
 import pandas as pd
-import numpy as np
 from alpaca_trade_api.rest import REST, TimeFrame
 
 # --- Load config ---
@@ -38,7 +37,7 @@ def generate_signal(df, cfg):
     else:
         return None, reason
 
-# --- Market hours check (regular US market) ---
+# --- Market hours check ---
 def is_regular_hours():
     now = datetime.now(timezone.utc)
     return (now.hour > 14 or (now.hour == 14 and now.minute >= 30)) and now.hour < 21
@@ -71,8 +70,7 @@ def trade_account(account_info):
     for sym in symbols:
         try:
             bars = api.get_bars(sym, TimeFrame.Minute, limit=50).df
-            bars = bars[bars["exchange"] == "NASDAQ"]  # filter if needed
-            if len(bars) < 20:
+            if len(bars) < max(config["sma_slow"], config["rsi_period"]):
                 print(f"[{sym}] Not enough data, skipping")
                 continue
 
