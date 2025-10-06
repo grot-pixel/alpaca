@@ -1,7 +1,7 @@
 {
   "symbols": ["TQQQ", "SOXL", "AAPL", "TSLA", "AMD", "NVDA", "UUUU", "MP", "UURAF", "METC", "NB", "ABAT", "USAR", "LYSDY"],
   "max_position_pct": 0.25,
-  "max_trade_pct": 0.20,
+  "max_trade_pct": 0.2,
   "stop_loss_pct": 0.025,
   "take_profit_pct": 0.08,
   "rsi_period": 9,
