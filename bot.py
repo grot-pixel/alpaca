@@ -1,7 +1,8 @@
 import os
 from alpaca_trade_api.rest import REST, TimeFrame
 import pandas as pd
-from datetime import datetime, timezone
+from datetime import datetime
+import pytz
 
 # --- Example signal logic (4 bars) ---
 def generate_signal(symbol, api):
@@ -24,9 +25,12 @@ def generate_signal(symbol, api):
 
 # --- Determine if market is open (regular hours) ---
 def is_regular_market_open():
-    now = datetime.now(timezone.utc)
-    # US market regular hours: 9:30–16:00 EST (14:30–21:00 UTC)
-    return now.hour >= 14 and (now.hour < 21 or (now.hour == 21 and now.minute == 0))
+    eastern = pytz.timezone("US/Eastern")
+    now_et = datetime.now(eastern)
+    # Market hours: 9:30 AM – 4:00 PM Eastern
+    market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+    market_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+    return market_open <= now_et <= market_close
 
 # --- Trade function for one account ---
 def trade_account(account_info):
