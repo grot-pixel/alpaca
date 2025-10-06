@@ -3,50 +3,48 @@ import json
 from datetime import datetime, timezone
 import pandas as pd
 from alpaca_trade_api.rest import REST, TimeFrame
+from alpaca.common.exceptions import APIError
 
 # --- Load config ---
-with open("config.json") as f:
-    config = json.load(f)
-print("Loaded config:", config)
+CONFIG_FILE = "config.json"
+with open(CONFIG_FILE) as f:
+    cfg = json.load(f)
+print("Loaded config:", cfg)
 
-# --- Signal logic ---
-def generate_signal(df, cfg):
-    if len(df) < max(cfg["sma_slow"], cfg["rsi_period"]):
-        return None, "Not enough data"
+# --- Example signal logic ---
+def generate_signal(symbol, api, cfg):
+    try:
+        # Fetch recent bars
+        bars = api.get_bars(symbol, TimeFrame.Minute, limit=max(cfg["sma_slow"], cfg["rsi_period"])+1).df
+        if bars.empty or len(bars) < max(cfg["sma_slow"], cfg["rsi_period"]):
+            return None, "Not enough data"
 
-    df["sma_fast"] = df["close"].rolling(cfg["sma_fast"]).mean()
-    df["sma_slow"] = df["close"].rolling(cfg["sma_slow"]).mean()
+        # Simple SMA strategy
+        bars["sma_fast"] = bars["close"].rolling(cfg["sma_fast"]).mean()
+        bars["sma_slow"] = bars["close"].rolling(cfg["sma_slow"]).mean()
 
-    delta = df["close"].diff()
-    gain = delta.clip(lower=0)
-    loss = (-delta).clip(lower=0)
-    avg_gain = gain.rolling(cfg["rsi_period"]).mean()
-    avg_loss = loss.rolling(cfg["rsi_period"]).mean()
-    rs = avg_gain / avg_loss
-    df["rsi"] = 100 - (100 / (1 + rs))
+        last_fast = bars["sma_fast"].iloc[-1]
+        last_slow = bars["sma_slow"].iloc[-1]
 
-    sma_fast = df["sma_fast"].iloc[-1]
-    sma_slow = df["sma_slow"].iloc[-1]
-    rsi = df["rsi"].iloc[-1]
+        if last_fast > last_slow:
+            return "buy", f"SMA fast {last_fast:.2f} > SMA slow {last_slow:.2f}"
+        elif last_fast < last_slow:
+            return "sell", f"SMA fast {last_fast:.2f} < SMA slow {last_slow:.2f}"
+        else:
+            return None, "No crossover"
+    except Exception as e:
+        return None, f"Error generating signal: {e}"
 
-    reason = f"sma_fast={sma_fast:.2f}, sma_slow={sma_slow:.2f}, rsi={rsi:.2f}"
-    if sma_fast > sma_slow and rsi < cfg["rsi_overbought"]:
-        return "BUY", reason
-    elif sma_fast < sma_slow and rsi > cfg["rsi_oversold"]:
-        return "SELL", reason
-    else:
-        return None, reason
-
-# --- Market hours check ---
+# --- Check if regular market is open ---
 def is_regular_hours():
     now = datetime.now(timezone.utc)
-    return (now.hour > 14 or (now.hour == 14 and now.minute >= 30)) and now.hour < 21
+    return now.weekday() < 5 and 14 <= now.hour < 21  # 9:30-16:00 ET in UTC
 
-# --- Trade one account ---
+# --- Trade function for one account ---
 def trade_account(account_info):
-    name = account_info["name"]
-    api = account_info["api"]
-    symbols = account_info["symbols"]
+    name = account_info['name']
+    api = account_info['api']
+    symbols = account_info['symbols']
 
     print(f"\n=== Trading for {name} ===")
     try:
@@ -54,42 +52,44 @@ def trade_account(account_info):
         cash = float(account.cash)
         equity = float(account.equity)
         print(f"Account Cash: ${cash:.2f}, Equity: ${equity:.2f}")
+    except APIError as e:
+        print(f"API error fetching account info for {name}: {e}")
+        return
     except Exception as e:
-        print(f"Error fetching account info: {e}")
+        print(f"Unexpected error fetching account info for {name}: {e}")
         return
 
     try:
         positions = {p.symbol: float(p.qty) for p in api.list_positions()}
         print(f"Current Positions: {positions}")
     except Exception as e:
-        print(f"Error fetching positions: {e}")
+        print(f"Error fetching positions for {name}: {e}")
         positions = {}
 
     regular_hours = is_regular_hours()
 
     for sym in symbols:
         try:
-            bars = api.get_bars(sym, TimeFrame.Minute, limit=50).df
-            if len(bars) < max(config["sma_slow"], config["rsi_period"]):
-                print(f"[{sym}] Not enough data, skipping")
-                continue
-
-            signal, reason = generate_signal(bars, config)
-            if signal is None:
-                print(f"[{sym}] No signal. ({reason})")
+            signal, reason = generate_signal(sym, api, cfg)
+            if not signal:
+                print(f"[{sym}] No signal, skipping ({reason})")
                 continue
 
             if regular_hours:
-                qty = 1 if signal == "BUY" else positions.get(sym, 0)
-                side = signal.lower()
-                if qty > 0:
-                    api.submit_order(sym, qty, side, "market", "day")
-                    print(f"[{sym}] {signal} order submitted ({qty} shares). Reason: {reason}")
+                if signal == "buy":
+                    print(f"[{sym}] Signal: BUY ({reason})")
+                    api.submit_order(sym, 1, 'buy', 'market', 'day')
+                    print(f"[{sym}] Order submitted: BUY 1 share")
+                elif signal == "sell" and positions.get(sym, 0) > 0:
+                    qty = positions[sym]
+                    print(f"[{sym}] Signal: SELL ({reason})")
+                    api.submit_order(sym, qty, 'sell', 'market', 'day')
+                    print(f"[{sym}] Order submitted: SELL {qty} shares")
             else:
-                print(f"[{sym}] Signal={signal} (extended hours, not placing). Reason: {reason}")
-
+                # Extended hours: log only
+                print(f"[{sym}] Signal: {signal.upper()} ({reason}) [Extended Hours, NOT placing order]")
         except Exception as e:
-            print(f"[{sym}] Error processing: {e}")
+            print(f"[{sym}] Error processing symbol: {e}")
 
 # --- Initialize accounts ---
 accounts = []
@@ -99,21 +99,21 @@ for i in [1, 2]:
     base = os.getenv(f"APCA_BASE_URL_{i}") or "https://paper-api.alpaca.markets"
 
     if not key or not secret:
-        print(f"Account {i} missing API key/secret, skipping")
+        print(f"API key/secret missing for account {i}, skipping.")
         continue
 
     try:
         api = REST(key, secret, base)
-        api.get_account()
+        api.get_account()  # test connection
         print(f"Account {i} connected successfully")
         accounts.append({
             "name": f"PaperAccount{i}",
             "api": api,
-            "symbols": config["symbols"]
+            "symbols": cfg["symbols"]
         })
     except Exception as e:
         print(f"Error initializing account {i}: {e}")
 
-# --- Run bot ---
-for acc in accounts:
-    trade_account(acc)
+# --- Run trading loop ---
+for account_info in accounts:
+    trade_account(account_info)
