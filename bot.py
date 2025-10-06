@@ -1,137 +1,72 @@
-import os
 import json
-from alpaca_trade_api.rest import REST, TimeFrame
+import time
+import datetime
 import pandas as pd
-from datetime import datetime, timezone
+import numpy as np
+from robinhood_client import RobinhoodClient
 
-# --- Load Config ---
-CONFIG_FILE = "config.json"
-try:
-    with open(CONFIG_FILE, "r") as f:
-        config = json.load(f)
-    print(f"Loaded config: {CONFIG_FILE}")
-except Exception as e:
-    print(f"Error loading {CONFIG_FILE}: {e}")
-    config = {}
+def load_config():
+    with open("config.json", "r") as f:
+        return json.load(f)
 
-# --- Signal Generation Logic (RSI + SMA crossover example) ---
-def generate_signal(symbol, api):
-    try:
-        bars = api.get_bars(symbol, TimeFrame.Minute, limit=config.get("sma_slow", 30) + 1).df
-        if len(bars) < config.get("sma_slow", 30):
-            print(f"Not enough data for {symbol}, skipping signal.")
-            return None
+def get_signals(df, cfg):
+    df["sma_fast"] = df["close"].rolling(cfg["sma_fast"]).mean()
+    df["sma_slow"] = df["close"].rolling(cfg["sma_slow"]).mean()
 
-        bars["sma_fast"] = bars["close"].rolling(config.get("sma_fast", 10)).mean()
-        bars["sma_slow"] = bars["close"].rolling(config.get("sma_slow", 30)).mean()
+    delta = df["close"].diff()
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
+    avg_gain = pd.Series(gain).rolling(cfg["rsi_period"]).mean()
+    avg_loss = pd.Series(loss).rolling(cfg["rsi_period"]).mean()
+    rs = avg_gain / avg_loss
+    df["rsi"] = 100 - (100 / (1 + rs))
 
-        # RSI calculation
-        delta = bars["close"].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(config.get("rsi_period", 14)).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(config.get("rsi_period", 14)).mean()
-        rs = gain / loss
-        bars["rsi"] = 100 - (100 / (1 + rs))
+    if len(df) < max(cfg["sma_slow"], cfg["rsi_period"]):
+        return "NO_DATA"
 
-        latest = bars.iloc[-1]
-        prev = bars.iloc[-2]
+    sma_fast = df["sma_fast"].iloc[-1]
+    sma_slow = df["sma_slow"].iloc[-1]
+    rsi = df["rsi"].iloc[-1]
 
-        signal = None
+    if sma_fast > sma_slow and rsi < cfg["rsi_overbought"]:
+        return "BUY"
+    elif sma_fast < sma_slow and rsi > cfg["rsi_oversold"]:
+        return "SELL"
+    else:
+        return "HOLD"
 
-        # Buy signal: fast SMA crosses above slow SMA and RSI < oversold
-        if (
-            prev["sma_fast"] < prev["sma_slow"]
-            and latest["sma_fast"] > latest["sma_slow"]
-            and latest["rsi"] < config.get("rsi_oversold", 30)
-        ):
-            signal = "buy"
+def main():
+    cfg = load_config()
+    print(f"Loaded config: {cfg}")
 
-        # Sell signal: fast SMA crosses below slow SMA or RSI > overbought
-        elif (
-            prev["sma_fast"] > prev["sma_slow"]
-            and latest["sma_fast"] < latest["sma_slow"]
-        ) or latest["rsi"] > config.get("rsi_overbought", 70):
-            signal = "sell"
+    accounts = ["PaperAccount1", "PaperAccount2"]
+    clients = [RobinhoodClient(acc) for acc in accounts]
 
-        return signal
-    except Exception as e:
-        print(f"Error generating signal for {symbol}: {e}")
-        return None
+    while True:
+        print("\n=== New Scan", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "===")
+        for client in clients:
+            print(f"\n=== Trading for {client.account_name} ===")
+            print(f"Account Cash: ${client.cash:.2f}, Equity: ${client.equity:.2f}")
+            print(f"Current Positions: {client.positions}")
 
-# --- Determine if market is open (regular hours only) ---
-def is_regular_market_open():
-    now = datetime.now(timezone.utc)
-    # Regular hours: 9:30–16:00 ET = 14:30–21:00 UTC
-    return 14 <= now.hour < 21 or (now.hour == 21 and now.minute == 0)
+            for sym in cfg["symbols"]:
+                try:
+                    df = client.get_price_history(sym)
+                    if df is None or len(df) < cfg["sma_slow"]:
+                        print(f"[{sym}] Not enough data, skipping.")
+                        continue
 
-# --- Trade function for one account ---
-def trade_account(account_info):
-    name = account_info["name"]
-    api = account_info["api"]
-    symbols = config.get("symbols", [])
+                    signal = get_signals(df, cfg)
+                    if signal == "NO_DATA":
+                        print(f"[{sym}] Insufficient data.")
+                        continue
 
-    print(f"\n=== Trading for {name} ===")
+                    print(f"[{sym}] Signal → {signal}")
+                except Exception as e:
+                    print(f"[{sym}] Error: {e}")
 
-    try:
-        account = api.get_account()
-        cash = float(account.cash)
-        equity = float(account.equity)
-        print(f"Account Cash: ${cash:.2f}, Equity: ${equity:.2f}")
-    except Exception as e:
-        print(f"Error fetching account info for {name}: {e}")
-        return
+        print("\nSleeping 5 minutes...\n")
+        time.sleep(300)
 
-    try:
-        positions = {p.symbol: float(p.qty) for p in api.list_positions()}
-        print(f"Current Positions: {positions}")
-    except Exception as e:
-        print(f"Error fetching positions for {name}: {e}")
-        positions = {}
-
-    regular_hours = is_regular_market_open()
-
-    for symbol in symbols:
-        try:
-            signal = generate_signal(symbol, api)
-            if not signal:
-                print(f"[{symbol}] No signal, skipping.")
-                continue
-
-            if regular_hours:
-                if signal == "buy":
-                    print(f"[{symbol}] BUY signal (regular hours)")
-                    api.submit_order(symbol, 1, "buy", "market", "day")
-                elif signal == "sell" and positions.get(symbol, 0) > 0:
-                    qty = positions[symbol]
-                    print(f"[{symbol}] SELL signal (regular hours) - closing {qty} shares")
-                    api.submit_order(symbol, qty, "sell", "market", "day")
-            else:
-                print(f"[{symbol}] Signal: {signal.upper()} (extended hours, not placing order)")
-
-        except Exception as e:
-            print(f"[{symbol}] Error processing symbol: {e}")
-
-# --- Initialize accounts ---
-accounts = []
-for i in [1, 2]:
-    key = os.getenv(f"APCA_API_KEY_{i}")
-    secret = os.getenv(f"APCA_API_SECRET_{i}")
-    base = os.getenv(f"APCA_BASE_URL_{i}") or "https://paper-api.alpaca.markets"
-
-    if not key or not secret:
-        print(f"API key/secret missing for account {i}, skipping.")
-        continue
-
-    try:
-        api = REST(key, secret, base)
-        api.get_account()
-        print(f"Account {i} connected successfully.")
-        accounts.append({
-            "name": f"PaperAccount{i}",
-            "api": api,
-        })
-    except Exception as e:
-        print(f"Error initializing account {i}: {e}")
-
-# --- Run trading loop ---
-for account_info in accounts:
-    trade_account(account_info)
+if __name__ == "__main__":
+    main()
