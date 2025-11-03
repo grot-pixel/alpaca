@@ -1,14 +1,13 @@
 {
-  "symbols": ["TQQQ", "SOXL", "AAPL", "TSLA", "AMD", "NVDA", "SPY", "IWM", "XLF", "XLE"],
-  "max_position_pct": 0.25,
-  "max_trade_pct": 0.1,
-  "stop_loss_pct": 0.0125,
-  "take_profit_pct": 0.025,
+  "stop_loss_pct": 0.025,
+  "take_profit_pct": 0.08,
   "rsi_period": 9,
   "rsi_overbought": 68,
   "rsi_oversold": 32,
+  "sma_fast": 7,
+  "sma_slow": 20
+  "rsi_overbought": 70,
+  "rsi_oversold": 30,
   "sma_fast": 5,
-  "sma_slow": 13,
-  "vol_window": 10,
-  "min_volatility": 0.003
+  "sma_slow": 13
 }
