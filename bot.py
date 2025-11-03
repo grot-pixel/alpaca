@@ -1,73 +1,131 @@
-#!/usr/bin/env python3
-"""
-Intraday Scalp Bot - single-cycle (safe for scheduled CI runs)
-
-Behavior:
-- Uses 1-minute or 5-minute bars (configurable) for fast scalp signals
-- SMA fast/slow + RSI signal
-- Volatility & liquidity filter to reduce false signals
-- Position sizing: qty = floor((equity * max_trade_pct) / price)
-- Bracket orders with stop_loss_pct and take_profit_pct
-- Single run and exit (safe for GitHub Actions)
-"""
 import os
 import json
-import csv
-from datetime import datetime, timezone
-from decimal import Decimal
-
 import pandas as pd
-from alpaca_trade_api.rest import REST, TimeFrame, APIError
+from datetime import datetime, timezone
+from alpaca_trade_api.rest import REST, TimeFrame
+from utils import generate_signal
 
-from utils import generate_signal, avg_volume_threshold
-
-# Optional alerting
-try:
-    from email_alerts import send_alert
-except Exception:
-    def send_alert(subject, body):
-        print("[alerts disabled]", subject)
-        return False
-
-# Load config
 CONFIG_FILE = "config.json"
+
+# --- Load config ---
 with open(CONFIG_FILE) as f:
     cfg = json.load(f)
+print("Loaded config:", cfg)
 
-TRADE_LOG = "trade_log.csv"
+def utc_now():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
-def log_trade(record: dict):
-    header = [
-        "timestamp_utc", "account", "symbol", "side", "qty",
-        "intended_value", "avg_fill_price", "stop_price", "take_profit_price",
-        "notes"
-    ]
-    exists = os.path.exists(TRADE_LOG)
-    with open(TRADE_LOG, "a", newline="") as fp:
-        writer = csv.DictWriter(fp, fieldnames=header)
-        if not exists:
-            writer.writeheader()
-        writer.writerow(record)
+# --- One-shot trading cycle ---
+def trade_account(account_info):
+    name = account_info["name"]
+    api = account_info["api"]
+    symbols = account_info["symbols"]
+    print(f"\n=== Trading for {name} ===")
 
-def is_regular_hours():
-    now = datetime.now(timezone.utc)
-    # 9:30-16:00 ET -> UTC 13:30-21:00; approximating by hour to avoid timezone libs:
-    return now.weekday() < 5 and 14 <= now.hour < 21
-
-def fetch_bars(api, symbol, timeframe: TimeFrame, limit: int):
+    # account stats
     try:
-        bars = api.get_bars(symbol, timeframe, limit=limit).df
-        return bars if not bars.empty else None
+        account = api.get_account()
+        cash = float(account.cash)
+        equity = float(account.equity)
+        print(f"Cash: ${cash:.2f}, Equity: ${equity:.2f}")
     except Exception as e:
-        print(f"[{symbol}] get_bars error: {e}")
-        return None
+        print(f"[{name}] Error getting account info: {e}")
+        return
 
-def total_open_exposure(api):
-    """Return current total market value (float) of all open positions."""
+    # current positions
     try:
-        positions = api.list_positions()
-        total = 0.0
-        for p in positions:
-            total += float(p.qty) * float(p.current_price)
-        return total
+        positions = {p.symbol: float(p.qty) for p in api.list_positions()}
     except Exception:
+        positions = {}
+
+    for sym in symbols:
+        try:
+            bars = api.get_bars(sym, TimeFrame.Minute, limit=max(cfg["sma_slow"], cfg["rsi_period"]) + 2).df
+            if bars.empty:
+                print(f"[{sym}] No data, skipping.")
+                continue
+
+            signal = generate_signal(bars, cfg)
+            if not signal:
+                print(f"[{sym}] No signal.")
+                continue
+
+            price = float(bars["close"].iloc[-1])
+            position_qty = positions.get(sym, 0.0)
+
+            # Determine trade size dynamically
+            target_value = equity * cfg["max_trade_pct"]
+            qty = max(int(target_value / price), 1)
+
+            # Execute logic
+            if signal == "buy" and position_qty == 0:
+                print(f"[{sym}] BUY {qty} @ ${price:.2f}")
+                api.submit_order(
+                    symbol=sym,
+                    qty=qty,
+                    side="buy",
+                    type="market",
+                    time_in_force="day",
+                    order_class="bracket",
+                    take_profit={"limit_price": round(price * (1 + cfg["take_profit_pct"]), 2)},
+                    stop_loss={"stop_price": round(price * (1 - cfg["stop_loss_pct"]), 2)}
+                )
+                log_trade(name, sym, "BUY", qty, price)
+
+            elif signal == "sell" and position_qty > 0:
+                print(f"[{sym}] SELL {position_qty} @ ${price:.2f}")
+                api.submit_order(
+                    symbol=sym,
+                    qty=position_qty,
+                    side="sell",
+                    type="market",
+                    time_in_force="day"
+                )
+                log_trade(name, sym, "SELL", position_qty, price)
+            else:
+                print(f"[{sym}] No action needed.")
+        except Exception as e:
+            print(f"[{sym}] Error: {e}")
+
+
+def log_trade(account_name, symbol, side, qty, price):
+    row = {
+        "time": utc_now(),
+        "account": account_name,
+        "symbol": symbol,
+        "side": side,
+        "qty": qty,
+        "price": price,
+    }
+    df = pd.DataFrame([row])
+    if os.path.exists("trade_log.csv"):
+        df.to_csv("trade_log.csv", mode="a", header=False, index=False)
+    else:
+        df.to_csv("trade_log.csv", index=False)
+    print(f"Logged: {row}")
+
+
+# --- Initialize accounts ---
+accounts = []
+for i in [1, 2]:
+    key = os.getenv(f"APCA_API_KEY_{i}")
+    secret = os.getenv(f"APCA_API_SECRET_{i}")
+    base = os.getenv(f"APCA_BASE_URL_{i}") or "https://paper-api.alpaca.markets"
+
+    if not key or not secret:
+        print(f"API key/secret missing for account {i}, skipping.")
+        continue
+
+    try:
+        api = REST(key, secret, base)
+        api.get_account()
+        accounts.append({"name": f"PaperAccount{i}", "api": api, "symbols": cfg["symbols"]})
+        print(f"Connected Account {i}")
+    except Exception as e:
+        print(f"Account {i} failed: {e}")
+
+# --- Run single cycle ---
+for acct in accounts:
+    trade_account(acct)
+
+print("\nCycle complete. Exiting cleanly.")
