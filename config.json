@@ -1,17 +1,17 @@
 {
-  "symbols": ["TQQQ", "SOXL", "AAPL", "TSLA", "AMD", "NVDA", "NB", "METC"],
+  "symbols": ["AAPL", "TSLA", "AMD", "NVDA", "SPY", "QQQ"],
+  "bar_minutes": 1,
   "sma_fast": 5,
   "sma_slow": 13,
   "rsi_period": 9,
   "rsi_overbought": 70,
   "rsi_oversold": 35,
-  "atr_period": 14,
-  "atr_multiplier": 1.5,
-  "risk_per_trade_pct": 0.01,
-  "max_position_pct": 0.25,
-  "max_trade_pct": 0.20,
-  "stop_loss_pct": 0.035,
-  "take_profit_pct": 0.09,
-  "trend_window": 50,
-  "min_avg_daily_volume": 50000
+  "volatility_lookback": 30,
+  "min_volatility": 0.0012,
+  "min_avg_daily_volume": 50000,
+  "max_trade_pct": 0.02,
+  "max_total_equity_pct": 0.40,
+  "stop_loss_pct": 0.012,
+  "take_profit_pct": 0.02,
+  "max_intraday_loss_pct": 0.05
 }
