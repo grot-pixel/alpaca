@@ -5,9 +5,6 @@ from datetime import datetime, timezone, timedelta
 import pandas as pd
 from alpaca_trade_api.rest import REST, TimeFrame
 
-# Assuming 'utils.py' is in the same directory and contains the necessary signal generation function.
-# If you are using your provided `utils.py`, the signal generation needs to be integrated.
-
 # --- Load config ---
 CONFIG_FILE = "config.json"
 try:
@@ -38,6 +35,10 @@ def generate_signals(data, config):
     data["sma_fast"] = data["close"].rolling(config["sma_fast"]).mean()
     data["sma_slow"] = data["close"].rolling(config["sma_slow"]).mean()
     data["rsi"] = rsi(data["close"], config["rsi_period"])
+
+    # Ensure we have enough data after rolling calculations
+    if data.empty or data.iloc[-1].isnull().any():
+        return None, "Not enough clean data for indicators"
 
     latest = data.iloc[-1]
     
@@ -80,9 +81,7 @@ def trade_strategy(account_name: str, api: REST, symbols: list):
     try:
         account = api.get_account()
         equity = float(account.equity)
-        cash = float(account.cash)
-        # Use equity or cash. Since this is a paper account, equity is safer for scaling.
-        # Use buying_power for real-time check, but equity for the base sizing.
+        # cash = float(account.cash) # Cash not needed for percentage of equity sizing
         print(f"Account Equity: ${equity:,.2f} | Buying Power: ${float(account.buying_power):,.2f}")
     except Exception as e:
         print(f"Error fetching account info: {e}")
@@ -106,6 +105,7 @@ def trade_strategy(account_name: str, api: REST, symbols: list):
             required_limit = max(cfg["sma_slow"], cfg["rsi_period"]) + 2 
             
             # Fetch minute bars for the symbol
+            # NOTE: For ETH, Alpaca uses Minute for crypto as well.
             bars = api.get_bars(sym, TimeFrame.Minute, limit=required_limit).df
             
             if bars.empty or len(bars) < required_limit:
@@ -113,12 +113,13 @@ def trade_strategy(account_name: str, api: REST, symbols: list):
                 continue
             
             # Generate signals based on the loaded data and config
+            # signal will be "buy", "sell", or None
             signal, reason = generate_signals(bars, cfg)
             
             # Get the latest closing price for sizing and stop/profit checks
             current_price = bars["close"].iloc[-1]
             
-            # --- Position Sizing Calculation (The FIX) ---
+            # --- Position Sizing Calculation (The FIX for Scaling) ---
             # Max dollar amount for a single trade (20% of current equity)
             max_trade_dollar = equity * cfg["max_trade_pct"]
             
@@ -165,7 +166,11 @@ def trade_strategy(account_name: str, api: REST, symbols: list):
                     # No signal or no action needed
                     pass
             else:
-                print(f"[{sym}] Signal: {signal.upper()} ({reason}) [Regular Market Closed, NOT placing entry order]")
+                # --- FIX: Check if signal is None before calling .upper() ---
+                if signal: 
+                    print(f"[{sym}] Signal: {signal.upper()} ({reason}) [Regular Market Closed, NOT placing entry order]")
+                else:
+                    print(f"[{sym}] No Trading Signal ({reason}) [Regular Market Closed, NOT placing entry order]")
             
             # --- Stop-Loss/Take-Profit Monitoring (Simplified Example) ---
             if sym in positions:
@@ -185,7 +190,7 @@ def trade_strategy(account_name: str, api: REST, symbols: list):
                     api.submit_order(sym, qty_to_close, 'sell', 'market', 'day')
 
         except Exception as e:
-            # Handle specific API rate limit errors if needed, otherwise general catch
+            # This block now correctly catches any other errors that might occur
             print(f"[{sym}] ❌ Error processing symbol: {e}")
 
 
