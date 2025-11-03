@@ -1,4 +1,3 @@
-@@ -3,7 +3,6 @@
 from datetime import datetime, timezone
 import pandas as pd
 from alpaca_trade_api.rest import REST, TimeFrame
