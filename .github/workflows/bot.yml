@@ -1,14 +1,8 @@
 name: Alpaca Multi-Account Bot
 
-# Run on every weekday at 4:00 AM ET and every 5 minutes during market hours (9:30 AM – 4:00 PM ET)
 on:
-  workflow_dispatch:   # allows manual trigger
   workflow_dispatch:   # allows manual trigger from GitHub UI
   schedule:
-    # Pre-market: 4:00 AM ET
-    - cron: '0 8 * * 1-5'  
-    # Market hours: every 5 minutes
-    - cron: '*/5 13-21 * * 1-5'  
     # Premarket: every 10 min from 4:00 AM – 9:29 AM ET (8–13 UTC)
     - cron: '*/10 8-12 * * 1-5'
     # Regular Market Hours: every 5 min from 9:30 AM – 4:00 PM ET (13:30–20:00 UTC)
@@ -18,23 +12,27 @@ jobs:
   run-bot:
     runs-on: ubuntu-latest
     env:
-      # Pull secrets for Account 1
       # Account 1 credentials
       APCA_API_KEY_1: ${{ secrets.APCA_API_KEY_1 }}
       APCA_API_SECRET_1: ${{ secrets.APCA_API_SECRET_1 }}
       APCA_BASE_URL_1: ${{ secrets.APCA_BASE_URL_1 }}
-      # Pull secrets for Account 2
       # Account 2 credentials
       APCA_API_KEY_2: ${{ secrets.APCA_API_KEY_2 }}
       APCA_API_SECRET_2: ${{ secrets.APCA_API_SECRET_2 }}
       APCA_BASE_URL_2: ${{ secrets.APCA_BASE_URL_2 }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Alpaca Bot
+        run: python bot.py
