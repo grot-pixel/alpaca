@@ -1,20 +1,22 @@
+# trading_bot.py
 import os
 import json
+import time
+import math
 from datetime import datetime, timezone, time as dt_time
 from zoneinfo import ZoneInfo
-import math
 import pandas as pd
 from alpaca_trade_api.rest import REST, TimeFrame
 
 # === Load config ===
-CONFIG_FILE = "config.json"
-with open(CONFIG_FILE) as f:
+with open("config.json") as f:
     cfg = json.load(f)
 print("Loaded config:", cfg)
 
-# === Helpers ===
+# === Constants / Timezone ===
 ET_ZONE = ZoneInfo("US/Eastern")
 
+# === Helpers ===
 def parse_hhmm_to_time(hhmm: str):
     h, m = [int(x) for x in hhmm.split(":")]
     return dt_time(h, m)
@@ -26,9 +28,9 @@ def in_trade_window(cfg):
     return start <= now_et.time() <= end and now_et.weekday() < 5
 
 def sma_signal_from_bars(bars_df, cfg):
-    # assumes bars_df has 'close'
     if bars_df.empty or len(bars_df) < max(cfg["sma_slow"], cfg["rsi_period"]):
         return None, "Not enough data"
+    bars_df = bars_df.copy()
     bars_df["sma_fast"] = bars_df["close"].rolling(cfg["sma_fast"]).mean()
     bars_df["sma_slow"] = bars_df["close"].rolling(cfg["sma_slow"]).mean()
     last_fast = bars_df["sma_fast"].iloc[-1]
@@ -42,35 +44,149 @@ def sma_signal_from_bars(bars_df, cfg):
     return None, "No crossover"
 
 def get_last_bar(api, symbol):
-    bars = api.get_bars(symbol, TimeFrame.Minute, limit=2).df
-    if bars.empty:
+    try:
+        bars = api.get_bars(symbol, TimeFrame.Minute, limit=2).df
+        if bars.empty:
+            return None
+        return bars.iloc[-1]
+    except Exception as e:
+        print(f"[{symbol}] Error fetching bars: {e}")
         return None
-    return bars.iloc[-1]
 
 def get_quote_safe(api, symbol):
     try:
         q = api.get_latest_quote(symbol)
-        # object may have .askprice/.bidprice or .ask.price etc depending on sdk
+        # Try common attribute names
         ask = getattr(q, "askprice", None) or getattr(q, "ask", None)
         bid = getattr(q, "bidprice", None) or getattr(q, "bid", None)
-        # Some wrappers use nested fields:
-        if hasattr(ask, "price"):
-            ask_p = float(ask.price)
-        else:
+        # Normalize nested structures
+        def extract_price(x):
+            if x is None:
+                return None
+            if hasattr(x, "price"):
+                return float(x.price)
             try:
-                ask_p = float(ask)
+                return float(x)
             except Exception:
-                ask_p = None
-        if hasattr(bid, "price"):
-            bid_p = float(bid.price)
-        else:
-            try:
-                bid_p = float(bid)
-            except Exception:
-                bid_p = None
-        return bid_p, ask_p
+                return None
+        return extract_price(bid), extract_price(ask)
     except Exception:
         return None, None
+
+# === Adaptive min volume decision ===
+def min_volume_for_symbol(sym, cfg):
+    min_vol_cfg = cfg.get("min_volume", {})
+    if isinstance(min_vol_cfg, dict):
+        high_list = {"AAPL", "TSLA", "AMD", "NVDA", "TQQQ", "SOXL"}
+        if sym in high_list:
+            return min_vol_cfg.get("high_liquidity", 20000)
+        else:
+            return min_vol_cfg.get("low_liquidity", 1000)
+    else:
+        # single numeric
+        try:
+            return int(min_vol_cfg)
+        except Exception:
+            return 1000
+
+# === Place single order and optionally wait for fill with retries ===
+def place_order_with_retry(api, symbol, side, qty=None, notional=None,
+                           type_="limit", limit_price=None, order_class=None,
+                           take_profit=None, stop_loss=None,
+                           retry_after_sec=30, max_attempts=3, allow_market_fallback=True):
+    """
+    Submit order and wait up to retry_after_sec for fill. If not filled, cancel and optionally retry
+    with increased slippage (calling code should compute new limit_price) or fallback to market.
+    Returns order result dict or raises.
+    """
+    attempt = 0
+    wait = retry_after_sec
+    while attempt < max_attempts:
+        attempt += 1
+        try:
+            # build kwargs for submit_order
+            kwargs = {
+                "symbol": symbol,
+                "side": side,
+                "type": type_,
+                "time_in_force": "day"
+            }
+            if qty is not None:
+                kwargs["qty"] = qty
+            if notional is not None:
+                kwargs["notional"] = notional
+            if limit_price is not None and type_.lower() == "limit":
+                kwargs["limit_price"] = float(limit_price)
+            if order_class:
+                kwargs["order_class"] = order_class
+            if take_profit:
+                kwargs["take_profit"] = take_profit
+            if stop_loss:
+                kwargs["stop_loss"] = stop_loss
+
+            order = api.submit_order(**kwargs)
+            oid = getattr(order, "id", None) or getattr(order, "order_id", None) or None
+            print(f"[{symbol}] Submitted order attempt {attempt}: {kwargs}. order_id={oid}")
+
+            # If no order id (sdk differences), return directly
+            if not oid:
+                return order
+
+            start = time.time()
+            while time.time() - start < wait:
+                try:
+                    o = api.get_order(oid)
+                except Exception:
+                    time.sleep(0.5)
+                    continue
+                status = getattr(o, "status", None)
+                filled_qty = float(getattr(o, "filled_qty", 0) or 0)
+                if status in ("filled", "partially_filled") and filled_qty > 0:
+                    print(f"[{symbol}] Order {oid} filled (status={status}, filled_qty={filled_qty})")
+                    return o
+                # not filled yet
+                time.sleep(1)
+            # Timeout waiting for fill -> cancel and retry strategy
+            try:
+                api.cancel_order(oid)
+                print(f"[{symbol}] Order {oid} canceled after timeout waiting {wait}s (attempt {attempt}).")
+            except Exception as e:
+                print(f"[{symbol}] Failed to cancel order {oid}: {e}")
+        except Exception as e:
+            print(f"[{symbol}] submit_order exception on attempt {attempt}: {e}")
+
+        # prepare for next attempt: widen wait slightly
+        wait = int(wait * 1.5)
+        attempt += 0
+
+    # if reached here, all attempts failed
+    if allow_market_fallback:
+        try:
+            print(f"[{symbol}] All limit attempts failed. Falling back to MARKET order as last resort.")
+            kwargs = {
+                "symbol": symbol,
+                "side": side,
+                "type": "market",
+                "time_in_force": "day"
+            }
+            if qty is not None:
+                kwargs["qty"] = qty
+            if notional is not None:
+                kwargs["notional"] = notional
+            if order_class:
+                kwargs["order_class"] = order_class
+            if take_profit:
+                kwargs["take_profit"] = take_profit
+            if stop_loss:
+                kwargs["stop_loss"] = stop_loss
+            order = api.submit_order(**kwargs)
+            print(f"[{symbol}] MARKET fallback submitted: {kwargs}")
+            return order
+        except Exception as e:
+            print(f"[{symbol}] MARKET fallback failed: {e}")
+            raise RuntimeError(f"All order attempts failed for {symbol}: {e}")
+    else:
+        raise RuntimeError(f"All order attempts failed for {symbol}")
 
 # === Signal generator wrapper ===
 def generate_signal(symbol, api, cfg):
@@ -80,14 +196,13 @@ def generate_signal(symbol, api, cfg):
     except Exception as e:
         return None, f"Error generating signal: {e}"
 
-# === Core trading logic for each account ===
+# === Core trading logic per account ===
 def trade_account(account_info):
     name = account_info["name"]
     api = account_info["api"]
     symbols = account_info["symbols"]
 
     print(f"\n=== Trading for {name} ===")
-
     try:
         account = api.get_account()
         cash = float(account.cash)
@@ -104,45 +219,32 @@ def trade_account(account_info):
         print(f"Error fetching positions for {name}: {e}")
         positions = {}
 
-    # Check trade window
+    # trade window
     if not in_trade_window(cfg):
-        print("Outside configured trade window or weekend — skipping trading for now.")
+        print("Outside trade window or weekend — skipping.")
         return
 
     for sym in symbols:
         try:
-            # generate signal
             signal, reason = generate_signal(sym, api, cfg)
             if not signal:
                 print(f"[{sym}] No signal ({reason})")
                 continue
 
-            # fetch price info and volume
             last_bar = get_last_bar(api, sym)
             if last_bar is None:
                 print(f"[{sym}] No bar data, skipping.")
                 continue
+
             last_price = float(last_bar.close)
             last_volume = int(last_bar.volume)
-
-            # Quote check for spread
             bid_p, ask_p = get_quote_safe(api, sym)
             spread_pct = None
             if bid_p and ask_p and ask_p > 0:
                 spread_pct = (ask_p - bid_p) / ask_p
 
-            # Volume & spread filters
-            # --- Dynamic min volume threshold ---
-            min_vol_cfg = cfg.get("min_volume", {})
-            if isinstance(min_vol_cfg, dict):
-                # If symbol is large-cap or ETF, use 'high_liquidity', else 'low_liquidity'
-                if sym in ["AAPL", "TSLA", "AMD", "NVDA", "TQQQ", "SOXL"]:
-                    min_vol = min_vol_cfg.get("high_liquidity", 20000)
-                else:
-                    min_vol = min_vol_cfg.get("low_liquidity", 1000)
-            else:
-                min_vol = min_vol_cfg
-            
+            # Adaptive min volume threshold
+            min_vol = min_volume_for_symbol(sym, cfg)
             if last_volume < min_vol:
                 print(f"[{sym}] Skipping: minute volume {last_volume} < threshold {min_vol}")
                 continue
@@ -154,141 +256,124 @@ def trade_account(account_info):
 
             print(f"[{sym}] Signal: {signal.upper()} ({reason}) price ${last_price:.2f}, vol {last_volume}, spread {spread_pct}")
 
-            # === BUY logic with limit orders and slices to reduce slippage ===
+            # position sizing
+            current_qty = positions.get(sym, 0)
+            current_value = current_qty * last_price
+            max_position_value = equity * cfg["max_position_pct"]
+            max_trade_value = cash * cfg["max_trade_pct"]
+            remaining_value = max_position_value - current_value
+            trade_value = min(max_trade_value, remaining_value)
+
             if signal == "buy":
-                current_qty = positions.get(sym, 0)
-                current_value = current_qty * last_price
-
-                max_position_value = equity * cfg["max_position_pct"]
-                max_trade_value = cash * cfg["max_trade_pct"]
-                remaining_value = max_position_value - current_value
-                trade_value = min(max_trade_value, remaining_value)
-
                 if trade_value <= 0:
-                    print(f"[{sym}] Already at max position or no cash allocated, skipping.")
+                    print(f"[{sym}] No allocation left (already near max position), skipping buy.")
                     continue
 
-                # slicing
                 slices = max(1, int(cfg.get("order_slices", 1)))
+                slippage_base = cfg.get("max_slippage_pct", 0.0025)
+                allow_fractional = cfg.get("allow_fractional", True)
+                order_type_cfg = cfg.get("order_type", "limit").lower()
+                retry_after = int(cfg.get("retry_unfilled_after_sec", 30))
+
                 slice_value = trade_value / slices
-                slippage = cfg.get("max_slippage_pct", 0.0025)
-
                 executed_any = False
-                for i in range(slices):
-                    target_slice_value = slice_value
-                    # price step: slightly more aggressive for later slices (if not filled)
-                    step = (i / max(1, slices - 1)) if slices > 1 else 0
-                    limit_price = round(last_price * (1 + slippage * step), 2)
 
-                    # Calculate qty for this slice (integer shares)
-                    qty = int(target_slice_value // limit_price)
-                    if qty < 1:
-                        # if fractional allowed, use notional market fallback (risk slippage)
-                        if cfg.get("allow_fractional", True):
-                            notional = target_slice_value
-                            try:
-                                api.submit_order(
-                                    symbol=sym,
-                                    notional=notional,
-                                    side="buy",
-                                    type="market",
-                                    time_in_force="day",
-                                    order_class="bracket",
-                                    take_profit={"limit_price": round(last_price * (1 + cfg["take_profit_pct"]), 2)},
-                                    stop_loss={"stop_price": round(last_price * (1 - cfg["stop_loss_pct"]), 2)}
-                                )
-                                print(f"[{sym}] Fractional MARKET notional ${notional:.2f} submitted (fallback).")
-                                executed_any = True
-                            except Exception as e:
-                                print(f"[{sym}] Fractional market order failed: {e}")
-                        else:
-                            print(f"[{sym}] Slice {i+1}: Not enough for 1 share at ${limit_price:.2f}, skipping slice.")
+                for i in range(slices):
+                    # progressive slippage step
+                    step = (i / max(1, slices - 1)) if slices > 1 else 0
+                    slippage = slippage_base * (1 + step)
+                    # Compute desired limit price allowing slippage above mid/last
+                    limit_price = round(last_price * (1 + slippage), 4)
+
+                    # compute qty for slice (integer shares)
+                    qty = int(math.floor(slice_value / limit_price))
+                    notional = None
+                    if qty < 1 and allow_fractional:
+                        # use notional order if fractional allowed
+                        notional = slice_value
+                    elif qty < 1:
+                        print(f"[{sym}] Slice {i+1}: not enough to buy 1 share at ${limit_price:.2f}, skipping slice.")
                         continue
 
-                    # Place limit bracket order (reduces slippage)
-                    tp = round(limit_price * (1 + cfg["take_profit_pct"]), 2)
-                    sl = round(limit_price * (1 - cfg["stop_loss_pct"]), 2)
-                    try:
-                        api.submit_order(
-                            symbol=sym,
-                            qty=qty,
-                            side="buy",
-                            type="limit",
-                            time_in_force="day",
-                            limit_price=limit_price,
-                            order_class="bracket",
-                            take_profit={"limit_price": tp},
-                            stop_loss={"stop_price": sl}
-                        )
-                        print(f"[{sym}] Slice {i+1}: LIMIT BUY {qty} @ ${limit_price:.2f} → TP {tp} / SL {sl}")
-                        executed_any = True
-                    except Exception as e:
-                        # If bracket limit not supported/fails, fallback to limit without bracket, then to market bracket
-                        print(f"[{sym}] Slice {i+1}: limit bracket failed: {e}. Trying limit w/o bracket.")
+                    # bracket TP/SL prices
+                    tp_price = round(last_price * (1 + cfg["take_profit_pct"]), 4)
+                    sl_price = round(last_price * (1 - cfg["stop_loss_pct"]), 4)
+
+                    if order_type_cfg == "market":
+                        # submit market bracket order (fast)
                         try:
-                            api.submit_order(
-                                symbol=sym,
-                                qty=qty,
-                                side="buy",
-                                type="limit",
-                                time_in_force="day",
-                                limit_price=limit_price
+                            res = place_order_with_retry(
+                                api, sym, "buy", qty=qty if qty >= 1 else None,
+                                notional=notional, type_="market",
+                                order_class="bracket",
+                                take_profit={"limit_price": tp_price},
+                                stop_loss={"stop_price": sl_price},
+                                retry_after_sec=retry_after,
+                                max_attempts=1,  # market should fill quickly
+                                allow_market_fallback=False
                             )
-                            print(f"[{sym}] Slice {i+1}: LIMIT BUY {qty} @ ${limit_price:.2f} (no bracket).")
+                            print(f"[{sym}] MARKET buy slice {i+1} submitted (notional={notional}, qty={qty})")
                             executed_any = True
-                        except Exception as e2:
-                            print(f"[{sym}] Slice {i+1}: limit order failed: {e2}. Trying market bracket as last resort.")
-                            try:
-                                api.submit_order(
-                                    symbol=sym,
-                                    qty=qty,
-                                    side="buy",
-                                    type="market",
-                                    time_in_force="day",
-                                    order_class="bracket",
-                                    take_profit={"limit_price": tp},
-                                    stop_loss={"stop_price": sl}
-                                )
-                                print(f"[{sym}] Slice {i+1}: MARKET BUY fallback executed for {qty} shares.")
-                                executed_any = True
-                            except Exception as e3:
-                                print(f"[{sym}] Slice {i+1}: All order attempts failed: {e3}")
+                        except Exception as e:
+                            print(f"[{sym}] MARKET buy slice {i+1} failed: {e}")
+                    else:
+                        # limit (preferred): try limit bracket first, then escalate if not filled
+                        try:
+                            res = place_order_with_retry(
+                                api, sym, "buy", qty=qty if qty >= 1 else None,
+                                notional=notional, type_="limit",
+                                limit_price=limit_price,
+                                order_class="bracket",
+                                take_profit={"limit_price": tp_price},
+                                stop_loss={"stop_price": sl_price},
+                                retry_after_sec=retry_after,
+                                max_attempts=2,
+                                allow_market_fallback=True
+                            )
+                            print(f"[{sym}] LIMIT buy slice {i+1} (limit={limit_price}) result: {getattr(res,'status', res)}")
+                            executed_any = True
+                        except Exception as e:
+                            print(f"[{sym}] LIMIT buy slice {i+1} failed fully: {e}")
 
                 if not executed_any:
-                    print(f"[{sym}] No slices executed for buy (insufficient funds, failures, or filtered).")
+                    print(f"[{sym}] No buy slices executed for {sym} (all slices skipped/failed).")
 
-            # === SELL logic: close positions when signal says sell ===
-            elif signal == "sell" and positions.get(sym, 0) > 0:
-                qty = int(positions[sym])
-                # To reduce slippage on exit, use limit sell slightly below current price by slippage config
+            elif signal == "sell":
+                if current_qty <= 0:
+                    print(f"[{sym}] Sell signal but no current position, skipping.")
+                    continue
+
+                # try limit sell slightly below current to get filled quickly but not too poor price
                 slippage = cfg.get("max_slippage_pct", 0.0025)
-                limit_price = round(last_price * (1 - slippage), 2)
+                order_type_cfg = cfg.get("order_type", "limit").lower()
+                retry_after = int(cfg.get("retry_unfilled_after_sec", 30))
+                target_limit = round(last_price * (1 - slippage), 4)
+
                 try:
-                    api.submit_order(
-                        symbol=sym,
-                        qty=qty,
-                        side="sell",
-                        type="limit",
-                        time_in_force="day",
-                        limit_price=limit_price
-                    )
-                    print(f"[{sym}] LIMIT SELL {qty} @ ${limit_price:.2f} (signal sell).")
-                except Exception as e:
-                    print(f"[{sym}] Limit sell failed: {e}. Falling back to market sell.")
-                    try:
-                        api.submit_order(
-                            symbol=sym,
-                            qty=qty,
-                            side="sell",
-                            type="market",
-                            time_in_force="day"
+                    if order_type_cfg == "market":
+                        res = place_order_with_retry(
+                            api, sym, "sell", qty=int(math.floor(current_qty)),
+                            type_="market",
+                            retry_after_sec=retry_after,
+                            max_attempts=1,
+                            allow_market_fallback=False
                         )
-                        print(f"[{sym}] MARKET SELL {qty} executed.")
-                    except Exception as e2:
-                        print(f"[{sym}] Market sell also failed: {e2}")
+                        print(f"[{sym}] MARKET SELL executed for {current_qty}")
+                    else:
+                        res = place_order_with_retry(
+                            api, sym, "sell", qty=int(math.floor(current_qty)),
+                            type_="limit",
+                            limit_price=target_limit,
+                            retry_after_sec=retry_after,
+                            max_attempts=2,
+                            allow_market_fallback=True
+                        )
+                        print(f"[{sym}] LIMIT SELL submitted for {current_qty} @ {target_limit}")
+                except Exception as e:
+                    print(f"[{sym}] Sell attempts failed: {e}")
 
         except Exception as e:
-            print(f"[{sym}] Unexpected error: {e}")
+            print(f"[{sym}] Unexpected error in symbol loop: {e}")
 
 # === Initialize accounts ===
 accounts = []
