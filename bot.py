@@ -1,8 +1,9 @@
-# trading_bot.py
+# trading_bot_enhanced.py
 import os
 import json
 import time
 import math
+import csv
 from datetime import datetime, timezone, time as dt_time
 from zoneinfo import ZoneInfo
 import pandas as pd
@@ -13,8 +14,8 @@ with open("config.json") as f:
     cfg = json.load(f)
 print("Loaded config:", cfg)
 
-# === Constants / Timezone ===
 ET_ZONE = ZoneInfo("US/Eastern")
+TRADE_LOG_FILE = "trade_log.csv"
 
 # === Helpers ===
 def parse_hhmm_to_time(hhmm: str):
@@ -56,24 +57,14 @@ def get_last_bar(api, symbol):
 def get_quote_safe(api, symbol):
     try:
         q = api.get_latest_quote(symbol)
-        # Try common attribute names
-        ask = getattr(q, "askprice", None) or getattr(q, "ask", None)
         bid = getattr(q, "bidprice", None) or getattr(q, "bid", None)
-        # Normalize nested structures
-        def extract_price(x):
-            if x is None:
-                return None
-            if hasattr(x, "price"):
-                return float(x.price)
-            try:
-                return float(x)
-            except Exception:
-                return None
-        return extract_price(bid), extract_price(ask)
+        ask = getattr(q, "askprice", None) or getattr(q, "ask", None)
+        bid = float(getattr(bid, "price", bid) or bid)
+        ask = float(getattr(ask, "price", ask) or ask)
+        return bid, ask
     except Exception:
         return None, None
 
-# === Adaptive min volume decision ===
 def min_volume_for_symbol(sym, cfg):
     min_vol_cfg = cfg.get("min_volume", {})
     if isinstance(min_vol_cfg, dict):
@@ -83,52 +74,59 @@ def min_volume_for_symbol(sym, cfg):
         else:
             return min_vol_cfg.get("low_liquidity", 1000)
     else:
-        # single numeric
         try:
             return int(min_vol_cfg)
         except Exception:
             return 1000
 
-# === Place single order and optionally wait for fill with retries ===
+def log_trade(account_name, symbol, side, qty, price, order_type, status, reason="", tp=None, sl=None):
+    headers = ["timestamp", "account", "symbol", "side", "qty", "price", "order_type", "status", "reason", "take_profit", "stop_loss"]
+    file_exists = os.path.isfile(TRADE_LOG_FILE)
+    with open(TRADE_LOG_FILE, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=headers)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow({
+            "timestamp": datetime.now().isoformat(),
+            "account": account_name,
+            "symbol": symbol,
+            "side": side,
+            "qty": qty,
+            "price": price,
+            "order_type": order_type,
+            "status": status,
+            "reason": reason,
+            "take_profit": tp,
+            "stop_loss": sl
+        })
+
+# === Order placement with retry & fallback ===
 def place_order_with_retry(api, symbol, side, qty=None, notional=None,
                            type_="limit", limit_price=None, order_class=None,
                            take_profit=None, stop_loss=None,
                            retry_after_sec=30, max_attempts=3, allow_market_fallback=True):
-    """
-    Submit order and wait up to retry_after_sec for fill. If not filled, cancel and optionally retry
-    with increased slippage (calling code should compute new limit_price) or fallback to market.
-    Returns order result dict or raises.
-    """
     attempt = 0
     wait = retry_after_sec
     while attempt < max_attempts:
         attempt += 1
         try:
-            # build kwargs for submit_order
             kwargs = {
                 "symbol": symbol,
                 "side": side,
                 "type": type_,
                 "time_in_force": "day"
             }
-            if qty is not None:
-                kwargs["qty"] = qty
-            if notional is not None:
-                kwargs["notional"] = notional
-            if limit_price is not None and type_.lower() == "limit":
-                kwargs["limit_price"] = float(limit_price)
-            if order_class:
-                kwargs["order_class"] = order_class
-            if take_profit:
-                kwargs["take_profit"] = take_profit
-            if stop_loss:
-                kwargs["stop_loss"] = stop_loss
+            if qty is not None: kwargs["qty"] = qty
+            if notional is not None: kwargs["notional"] = notional
+            if limit_price is not None and type_ == "limit": kwargs["limit_price"] = float(limit_price)
+            if order_class: kwargs["order_class"] = order_class
+            if take_profit: kwargs["take_profit"] = take_profit
+            if stop_loss: kwargs["stop_loss"] = stop_loss
 
             order = api.submit_order(**kwargs)
             oid = getattr(order, "id", None) or getattr(order, "order_id", None) or None
-            print(f"[{symbol}] Submitted order attempt {attempt}: {kwargs}. order_id={oid}")
+            print(f"[{symbol}] Submitted order attempt {attempt}: {kwargs}, order_id={oid}")
 
-            # If no order id (sdk differences), return directly
             if not oid:
                 return order
 
@@ -142,53 +140,31 @@ def place_order_with_retry(api, symbol, side, qty=None, notional=None,
                 status = getattr(o, "status", None)
                 filled_qty = float(getattr(o, "filled_qty", 0) or 0)
                 if status in ("filled", "partially_filled") and filled_qty > 0:
-                    print(f"[{symbol}] Order {oid} filled (status={status}, filled_qty={filled_qty})")
                     return o
-                # not filled yet
                 time.sleep(1)
-            # Timeout waiting for fill -> cancel and retry strategy
+
             try:
                 api.cancel_order(oid)
-                print(f"[{symbol}] Order {oid} canceled after timeout waiting {wait}s (attempt {attempt}).")
+                print(f"[{symbol}] Order {oid} canceled after {wait}s")
             except Exception as e:
                 print(f"[{symbol}] Failed to cancel order {oid}: {e}")
         except Exception as e:
-            print(f"[{symbol}] submit_order exception on attempt {attempt}: {e}")
+            print(f"[{symbol}] submit_order exception attempt {attempt}: {e}")
 
-        # prepare for next attempt: widen wait slightly
         wait = int(wait * 1.5)
-        attempt += 0
 
-    # if reached here, all attempts failed
     if allow_market_fallback:
         try:
-            print(f"[{symbol}] All limit attempts failed. Falling back to MARKET order as last resort.")
-            kwargs = {
-                "symbol": symbol,
-                "side": side,
-                "type": "market",
-                "time_in_force": "day"
-            }
-            if qty is not None:
-                kwargs["qty"] = qty
-            if notional is not None:
-                kwargs["notional"] = notional
-            if order_class:
-                kwargs["order_class"] = order_class
-            if take_profit:
-                kwargs["take_profit"] = take_profit
-            if stop_loss:
-                kwargs["stop_loss"] = stop_loss
+            print(f"[{symbol}] Falling back to MARKET order")
+            kwargs["type"] = "market"
             order = api.submit_order(**kwargs)
-            print(f"[{symbol}] MARKET fallback submitted: {kwargs}")
             return order
         except Exception as e:
-            print(f"[{symbol}] MARKET fallback failed: {e}")
             raise RuntimeError(f"All order attempts failed for {symbol}: {e}")
     else:
         raise RuntimeError(f"All order attempts failed for {symbol}")
 
-# === Signal generator wrapper ===
+# === Signal wrapper ===
 def generate_signal(symbol, api, cfg):
     try:
         bars = api.get_bars(symbol, TimeFrame.Minute, limit=max(cfg["sma_slow"], cfg["rsi_period"]) + 1).df
@@ -196,7 +172,10 @@ def generate_signal(symbol, api, cfg):
     except Exception as e:
         return None, f"Error generating signal: {e}"
 
-# === Core trading logic per account ===
+# === Core trading logic ===
+REENTRY_COOLDOWN = {}  # symbol -> last closed timestamp
+TRAILING_STOPS = {}    # symbol -> current stop price
+
 def trade_account(account_info):
     name = account_info["name"]
     api = account_info["api"]
@@ -207,25 +186,29 @@ def trade_account(account_info):
         account = api.get_account()
         cash = float(account.cash)
         equity = float(account.equity)
-        print(f"Account Cash: ${cash:.2f}, Equity: ${equity:.2f}")
+        print(f"Cash: ${cash:.2f}, Equity: ${equity:.2f}")
     except Exception as e:
         print(f"Error fetching account info for {name}: {e}")
         return
 
     try:
         positions = {p.symbol: float(p.qty) for p in api.list_positions()}
-        print(f"Current Positions: {positions}")
     except Exception as e:
-        print(f"Error fetching positions for {name}: {e}")
+        print(f"Error fetching positions: {e}")
         positions = {}
 
-    # trade window
     if not in_trade_window(cfg):
-        print("Outside trade window or weekend — skipping.")
+        print("Outside trade window, skipping.")
         return
 
     for sym in symbols:
         try:
+            # Re-entry cooldown: 5 min after closing
+            last_closed = REENTRY_COOLDOWN.get(sym)
+            if last_closed and (datetime.now(timezone.utc) - last_closed).total_seconds() < 300:
+                print(f"[{sym}] Cooldown active, skipping signal")
+                continue
+
             signal, reason = generate_signal(sym, api, cfg)
             if not signal:
                 print(f"[{sym}] No signal ({reason})")
@@ -233,171 +216,86 @@ def trade_account(account_info):
 
             last_bar = get_last_bar(api, sym)
             if last_bar is None:
-                print(f"[{sym}] No bar data, skipping.")
                 continue
-
             last_price = float(last_bar.close)
             last_volume = int(last_bar.volume)
             bid_p, ask_p = get_quote_safe(api, sym)
-            spread_pct = None
-            if bid_p and ask_p and ask_p > 0:
-                spread_pct = (ask_p - bid_p) / ask_p
+            spread_pct = ((ask_p - bid_p)/ask_p if bid_p and ask_p else None)
 
-            # Adaptive min volume threshold
             min_vol = min_volume_for_symbol(sym, cfg)
             if last_volume < min_vol:
-                print(f"[{sym}] Skipping: minute volume {last_volume} < threshold {min_vol}")
                 continue
-
             max_spread = cfg.get("max_spread_pct", 0.01)
             if spread_pct is not None and spread_pct > max_spread:
-                print(f"[{sym}] Skipping: spread {spread_pct:.4f} > max_spread {max_spread}")
                 continue
 
-            print(f"[{sym}] Signal: {signal.upper()} ({reason}) price ${last_price:.2f}, vol {last_volume}, spread {spread_pct}")
-
-            # position sizing
             current_qty = positions.get(sym, 0)
             current_value = current_qty * last_price
             max_position_value = equity * cfg["max_position_pct"]
             max_trade_value = cash * cfg["max_trade_pct"]
             remaining_value = max_position_value - current_value
             trade_value = min(max_trade_value, remaining_value)
+            if trade_value <= 0 and signal == "buy":
+                continue
 
+            # Trailing stop
+            trailing_stop = TRAILING_STOPS.get(sym)
+
+            # Execute
             if signal == "buy":
-                if trade_value <= 0:
-                    print(f"[{sym}] No allocation left (already near max position), skipping buy.")
-                    continue
-
-                slices = max(1, int(cfg.get("order_slices", 1)))
-                slippage_base = cfg.get("max_slippage_pct", 0.0025)
-                allow_fractional = cfg.get("allow_fractional", True)
-                order_type_cfg = cfg.get("order_type", "limit").lower()
-                retry_after = int(cfg.get("retry_unfilled_after_sec", 30))
-
-                slice_value = trade_value / slices
-                executed_any = False
-
-                for i in range(slices):
-                    # progressive slippage step
-                    step = (i / max(1, slices - 1)) if slices > 1 else 0
-                    slippage = slippage_base * (1 + step)
-                    # Compute desired limit price allowing slippage above mid/last
-                    limit_price = round(last_price * (1 + slippage), 4)
-
-                    # compute qty for slice (integer shares)
-                    qty = int(math.floor(slice_value / limit_price))
+                qty = int(math.floor(trade_value / last_price))
+                if qty < 1 and cfg.get("allow_fractional", True):
+                    notional = trade_value
+                    qty = None
+                else:
                     notional = None
-                    if qty < 1 and allow_fractional:
-                        # use notional order if fractional allowed
-                        notional = slice_value
-                    elif qty < 1:
-                        print(f"[{sym}] Slice {i+1}: not enough to buy 1 share at ${limit_price:.2f}, skipping slice.")
-                        continue
 
-                    # bracket TP/SL prices
-                    tp_price = round(last_price * (1 + cfg["take_profit_pct"]), 4)
-                    sl_price = round(last_price * (1 - cfg["stop_loss_pct"]), 4)
+                tp_price = round(last_price*(1+cfg["take_profit_pct"]),4)
+                sl_price = round(last_price*(1-cfg["stop_loss_pct"]),4)
 
-                    if order_type_cfg == "market":
-                        # submit market bracket order (fast)
-                        try:
-                            res = place_order_with_retry(
-                                api, sym, "buy", qty=qty if qty >= 1 else None,
-                                notional=notional, type_="market",
-                                order_class="bracket",
-                                take_profit={"limit_price": tp_price},
-                                stop_loss={"stop_price": sl_price},
-                                retry_after_sec=retry_after,
-                                max_attempts=1,  # market should fill quickly
-                                allow_market_fallback=False
-                            )
-                            print(f"[{sym}] MARKET buy slice {i+1} submitted (notional={notional}, qty={qty})")
-                            executed_any = True
-                        except Exception as e:
-                            print(f"[{sym}] MARKET buy slice {i+1} failed: {e}")
-                    else:
-                        # limit (preferred): try limit bracket first, then escalate if not filled
-                        try:
-                            res = place_order_with_retry(
-                                api, sym, "buy", qty=qty if qty >= 1 else None,
-                                notional=notional, type_="limit",
-                                limit_price=limit_price,
-                                order_class="bracket",
-                                take_profit={"limit_price": tp_price},
-                                stop_loss={"stop_price": sl_price},
-                                retry_after_sec=retry_after,
-                                max_attempts=2,
-                                allow_market_fallback=True
-                            )
-                            print(f"[{sym}] LIMIT buy slice {i+1} (limit={limit_price}) result: {getattr(res,'status', res)}")
-                            executed_any = True
-                        except Exception as e:
-                            print(f"[{sym}] LIMIT buy slice {i+1} failed fully: {e}")
+                order_res = place_order_with_retry(
+                    api, sym, "buy", qty=qty, notional=notional,
+                    type_=cfg.get("order_type","limit"),
+                    limit_price=last_price,
+                    order_class="bracket",
+                    take_profit={"limit_price": tp_price},
+                    stop_loss={"stop_price": sl_price},
+                    retry_after_sec=cfg.get("retry_unfilled_after_sec", 30)
+                )
+                print(f"[{sym}] BUY placed: qty={qty}, price={last_price}, TP={tp_price}, SL={sl_price}")
+                log_trade(name, sym, "buy", qty or notional, last_price, cfg.get("order_type","limit"), "submitted", reason, tp_price, sl_price)
+                TRAILING_STOPS[sym] = sl_price
 
-                if not executed_any:
-                    print(f"[{sym}] No buy slices executed for {sym} (all slices skipped/failed).")
-
-            elif signal == "sell":
-                if current_qty <= 0:
-                    print(f"[{sym}] Sell signal but no current position, skipping.")
-                    continue
-
-                # try limit sell slightly below current to get filled quickly but not too poor price
-                slippage = cfg.get("max_slippage_pct", 0.0025)
-                order_type_cfg = cfg.get("order_type", "limit").lower()
-                retry_after = int(cfg.get("retry_unfilled_after_sec", 30))
-                target_limit = round(last_price * (1 - slippage), 4)
-
-                try:
-                    if order_type_cfg == "market":
-                        res = place_order_with_retry(
-                            api, sym, "sell", qty=int(math.floor(current_qty)),
-                            type_="market",
-                            retry_after_sec=retry_after,
-                            max_attempts=1,
-                            allow_market_fallback=False
-                        )
-                        print(f"[{sym}] MARKET SELL executed for {current_qty}")
-                    else:
-                        res = place_order_with_retry(
-                            api, sym, "sell", qty=int(math.floor(current_qty)),
-                            type_="limit",
-                            limit_price=target_limit,
-                            retry_after_sec=retry_after,
-                            max_attempts=2,
-                            allow_market_fallback=True
-                        )
-                        print(f"[{sym}] LIMIT SELL submitted for {current_qty} @ {target_limit}")
-                except Exception as e:
-                    print(f"[{sym}] Sell attempts failed: {e}")
+            elif signal == "sell" and current_qty > 0:
+                order_res = place_order_with_retry(
+                    api, sym, "sell", qty=current_qty, type_=cfg.get("order_type","limit"),
+                    limit_price=last_price, retry_after_sec=cfg.get("retry_unfilled_after_sec",30)
+                )
+                print(f"[{sym}] SELL placed: qty={current_qty}, price={last_price}")
+                log_trade(name, sym, "sell", current_qty, last_price, cfg.get("order_type","limit"), "submitted", reason)
+                REENTRY_COOLDOWN[sym] = datetime.now(timezone.utc)
+                if sym in TRAILING_STOPS:
+                    del TRAILING_STOPS[sym]
 
         except Exception as e:
-            print(f"[{sym}] Unexpected error in symbol loop: {e}")
+            print(f"[{sym}] Exception: {e}")
 
 # === Initialize accounts ===
 accounts = []
-for i in [1, 2]:
+for i in [1,2]:
     key = os.getenv(f"APCA_API_KEY_{i}")
     secret = os.getenv(f"APCA_API_SECRET_{i}")
     base = os.getenv(f"APCA_BASE_URL_{i}") or "https://paper-api.alpaca.markets"
-
     if not key or not secret:
-        print(f"API key/secret missing for account {i}, skipping.")
         continue
-
     try:
         api = REST(key, secret, base)
         api.get_account()
-        print(f"Account {i} connected successfully.")
-        accounts.append({
-            "name": f"PaperAccount{i}",
-            "api": api,
-            "symbols": cfg["symbols"]
-        })
+        accounts.append({"name": f"PaperAccount{i}", "api": api, "symbols": cfg["symbols"]})
+        print(f"Account {i} connected successfully")
     except Exception as e:
         print(f"Error initializing account {i}: {e}")
 
-# === Run trading loop ===
-for account_info in accounts:
-    trade_account(account_info)
+# === Run once ===
+for acc in accounts:
+    trade_account(acc)
