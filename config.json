@@ -10,15 +10,16 @@
   "sma_fast": 7,
   "sma_slow": 20,
 
-  "/* SLIPPAGE & EXECUTION */": "Settings for slippage controls and smart execution",
   "max_slippage_pct": 0.0025,
   "trade_start_time_et": "09:40",
   "trade_end_time_et": "15:55",
-  "min_volume": 100000,
+  "min_volume": {
+    "default": 5000,
+    "high_liquidity": 20000,
+    "low_liquidity": 1000
+  },
   "max_spread_pct": 0.01,
   "order_slices": 1,
   "allow_fractional": true,
-
-  "/* optional: logging and performance tuning */": "You can add fields here later",
   "log_trades": true
 }
