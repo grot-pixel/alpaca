@@ -1,9 +1,9 @@
 {
   "symbols": ["AAPL", "ABAT", "AMD", "BTC", "COIN", "DOGE", "ETH", "MARA", "MP", "MSTR", "NVDA", "NVDL", "RIOT", "SOL", "SOXL", "SOXS", "SPXL", "SPXU", "SQQQ", "TQQQ", "TSLA", "TSLL", "UUUU"], 
-  "max_position_pct": 0.25,
-  "max_trade_pct": 0.2,
-  "stop_loss_pct": 0.025,
-  "take_profit_pct": 0.08,
+  "max_position_pct": 0.10,
+  "max_trade_pct": 0.05,
+  "stop_loss_pct": 0.005,
+  "take_profit_pct": 0.01,
   "rsi_period": 9,
   "rsi_overbought": 70,
   "rsi_oversold": 30,
