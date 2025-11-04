@@ -132,9 +132,21 @@ def trade_account(account_info):
                 spread_pct = (ask_p - bid_p) / ask_p
 
             # Volume & spread filters
-            if last_volume < cfg.get("min_volume", 0):
-                print(f"[{sym}] Skipping: minute volume {last_volume} < min_volume {cfg.get('min_volume')}")
+            # --- Dynamic min volume threshold ---
+            min_vol_cfg = cfg.get("min_volume", {})
+            if isinstance(min_vol_cfg, dict):
+                # If symbol is large-cap or ETF, use 'high_liquidity', else 'low_liquidity'
+                if sym in ["AAPL", "TSLA", "AMD", "NVDA", "TQQQ", "SOXL"]:
+                    min_vol = min_vol_cfg.get("high_liquidity", 20000)
+                else:
+                    min_vol = min_vol_cfg.get("low_liquidity", 1000)
+            else:
+                min_vol = min_vol_cfg
+            
+            if last_volume < min_vol:
+                print(f"[{sym}] Skipping: minute volume {last_volume} < threshold {min_vol}")
                 continue
+
             max_spread = cfg.get("max_spread_pct", 0.01)
             if spread_pct is not None and spread_pct > max_spread:
                 print(f"[{sym}] Skipping: spread {spread_pct:.4f} > max_spread {max_spread}")
