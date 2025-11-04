@@ -32,10 +32,10 @@ def generate_signal(symbol, api, cfg):
     except Exception as e:
         return None, f"Error generating signal: {e}"
 
-# === Regular market hours check (9:30 AM–4:00 PM ET) ===
+# === Regular market hours check (9:30–16:00 ET) ===
 def is_regular_hours():
     now = datetime.now(timezone.utc)
-    return now.weekday() < 5 and 14 <= now.hour < 21  # 9:30–16:00 ET
+    return now.weekday() < 5 and 14 <= now.hour < 21
 
 # === Core trading logic for each account ===
 def trade_account(account_info):
@@ -74,7 +74,7 @@ def trade_account(account_info):
                 print(f"[{sym}] Signal: {signal.upper()} ({reason}) [Extended Hours, NOT placing order]")
                 continue
 
-            # === BUY logic ===
+            # === BUY logic with stop-loss / take-profit ===
             if signal == "buy":
                 quote = api.get_latest_trade(sym)
                 price = float(quote.price)
@@ -95,18 +95,26 @@ def trade_account(account_info):
                     print(f"[{sym}] Position already at or above max size, skipping.")
                     continue
 
+                # Calculate bracket prices
+                take_profit_price = round(price * (1 + cfg["take_profit_pct"]), 2)
+                stop_loss_price = round(price * (1 - cfg["stop_loss_pct"]), 2)
+
                 try:
-                    # Prefer fractional notional order
+                    # Fractional notional bracket order
                     api.submit_order(
                         symbol=sym,
                         notional=trade_value,
                         side="buy",
                         type="market",
-                        time_in_force="day"
+                        time_in_force="day",
+                        order_class="bracket",
+                        take_profit={"limit_price": take_profit_price},
+                        stop_loss={"stop_price": stop_loss_price}
                     )
-                    print(f"[{sym}] Order submitted: BUY ${trade_value:.2f} notional (~${price:.2f})")
+                    print(f"[{sym}] BUY ${trade_value:.2f} notional at ~${price:.2f} "
+                          f"→ TP ${take_profit_price:.2f} / SL ${stop_loss_price:.2f}")
                 except Exception:
-                    # Fallback for non-fractional accounts
+                    # Fallback: non-fractional
                     qty = int(trade_value // price)
                     if qty < 1:
                         print(f"[{sym}] Not enough cash to buy even 1 share (${price:.2f}).")
@@ -116,11 +124,15 @@ def trade_account(account_info):
                         qty=qty,
                         side="buy",
                         type="market",
-                        time_in_force="day"
+                        time_in_force="day",
+                        order_class="bracket",
+                        take_profit={"limit_price": take_profit_price},
+                        stop_loss={"stop_price": stop_loss_price}
                     )
-                    print(f"[{sym}] Order submitted: BUY {qty} shares (~${price:.2f})")
+                    print(f"[{sym}] BUY {qty} shares at ~${price:.2f} "
+                          f"→ TP ${take_profit_price:.2f} / SL ${stop_loss_price:.2f}")
 
-            # === SELL logic ===
+            # === SELL logic (manual exit if signal says so) ===
             elif signal == "sell" and positions.get(sym, 0) > 0:
                 qty = positions[sym]
                 print(f"[{sym}] Signal: SELL {qty} shares ({reason})")
@@ -131,7 +143,7 @@ def trade_account(account_info):
                     type="market",
                     time_in_force="day"
                 )
-                print(f"[{sym}] Order submitted: SELL {qty} shares at market")
+                print(f"[{sym}] Manual SELL submitted for {qty} shares")
 
         except Exception as e:
             print(f"[{sym}] Error processing symbol: {e}")
