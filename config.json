@@ -9,17 +9,14 @@
   "rsi_oversold": 32,
   "sma_fast": 7,
   "sma_slow": 20,
-
   "max_slippage_pct": 0.0025,
   "trade_start_time_et": "09:40",
   "trade_end_time_et": "15:55",
-  "min_volume": {
-    "default": 5000,
-    "high_liquidity": 20000,
-    "low_liquidity": 1000
-  },
+  "min_volume": { "default": 5000, "high_liquidity": 20000, "low_liquidity": 1000 },
   "max_spread_pct": 0.01,
   "order_slices": 1,
   "allow_fractional": true,
-  "log_trades": true
+  "log_trades": true,
+  "order_type": "limit", 
+  "retry_unfilled_after_sec": 30
 }
