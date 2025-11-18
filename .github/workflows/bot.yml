@@ -1,9 +1,9 @@
-name: Alpaca Multi-Account Bot 🤖
+name: Alpaca Multi-Account Bot
 
 on:
-  workflow_dispatch:    # allows manual trigger from GitHub UI
+  workflow_dispatch:   # allows manual trigger from GitHub UI
   schedule:
-    # Premarket: every 10 min from 4:00 AM – 9:29 AM ET (8:00–13:29 UTC)
+    # Premarket: every 10 min from 4:00 AM – 9:29 AM ET (8–13 UTC)
     - cron: '*/10 8-12 * * 1-5'
     # Regular Market Hours: every 5 min from 9:30 AM – 4:00 PM ET (13:30–20:00 UTC)
     - cron: '*/5 13-20 * * 1-5'
@@ -23,10 +23,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          # ADDED: This forces a full clone (instead of depth=1) 
-          # which can bypass Git server connection issues (502/500 errors).
-          fetch-depth: 0 
 
       - name: Set up Python
         uses: actions/setup-python@v5
