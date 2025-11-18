@@ -1,2 +1,2 @@
-alpaca-trade-api
+alpaca-py
 pandas
