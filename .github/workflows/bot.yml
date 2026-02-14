@@ -1,23 +1,27 @@
 name: Alpaca Multi-Account Bot
 
 on:
-  workflow_dispatch: # Allows you to run manually
+  workflow_dispatch:
   schedule:
-    - cron: '*/5 14-21 * * 1-5' # Alarm 1: Every 5 mins during market hours
-    - cron: '15 21 * * 1-5'     # Alarm 2: 4:15 PM ET (Daily Report)
+    # 7:00 AM CST to 5:55 PM CST
+    - cron: '*/5 13-23 * * 1-5' 
+    # 6:00 PM CST to 7:55 PM CST (Covers After-Hours)
+    - cron: '*/5 0-1 * * 2-6'   
+    # 7:15 PM CST (The Daily Report)
+    - cron: '15 1 * * 2-6'      
 
 jobs:
   run-bot:
-    # ONLY run this if it is NOT the 4:15 PM report time
-    if: github.event.schedule != '15 21 * * 1-5'
+    if: github.event.schedule != '15 1 * * 2-6'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-      - run: pip install alpaca-trade-api pandas numpy
-      - name: Execute Trades
+      - name: Install dependencies
+        run: pip install alpaca-trade-api pandas numpy
+      - name: Run Trading Bot
         run: python bot.py
         env:
           APCA_API_KEY_1: ${{ secrets.APCA_API_KEY_1 }}
@@ -26,16 +30,16 @@ jobs:
           APCA_API_SECRET_2: ${{ secrets.APCA_API_SECRET_2 }}
 
   daily-report:
-    # ONLY run this if it IS the 4:15 PM report time OR you clicked "Run Workflow" manually
-    if: github.event.schedule == '15 21 * * 1-5' || github.event_name == 'workflow_dispatch'
+    if: github.event.schedule == '15 1 * * 2-6' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
       - uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-      - run: pip install alpaca-trade-api
-      - name: Send Daily Email
+      - name: Install dependencies
+        run: pip install alpaca-trade-api
+      - name: Send Daily Report
         run: python report.py
         env:
           APCA_API_KEY_1: ${{ secrets.APCA_API_KEY_1 }}
