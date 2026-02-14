@@ -1,14 +1,30 @@
-# Add this to the "on: schedule:" section of your bot.yml
+name: Alpaca Multi-Account Bot
+
+on:
+  workflow_dispatch:
   schedule:
-    - cron: '*/5 14-21 * * 1-5' # Your existing trading schedule
-    - cron: '30 21 * * 1-5'     # NEW: 4:30 PM ET Report (21:30 UTC)
+    - cron: '*/5 14-21 * * 1-5' # Trades every 5 mins
+    - cron: '15 21 * * 1-5'     # Reports at 4:15 PM ET
 
 jobs:
-  # ... your existing run-bot job ...
+  run-bot:
+    if: github.event.schedule != '15 21 * * 1-5'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - run: pip install alpaca-trade-api pandas numpy
+      - run: python bot.py
+        env:
+          APCA_API_KEY_1: ${{ secrets.APCA_API_KEY_1 }}
+          APCA_API_SECRET_1: ${{ secrets.APCA_API_SECRET_1 }}
+          APCA_API_KEY_2: ${{ secrets.APCA_API_KEY_2 }}
+          APCA_API_SECRET_2: ${{ secrets.APCA_API_SECRET_2 }}
 
   daily-report:
-    # Only run this job for the 21:30 UTC schedule
-    if: github.event.schedule == '30 21 * * 1-5'
+    if: github.event.schedule == '15 21 * * 1-5' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -16,7 +32,7 @@ jobs:
         with:
           python-version: '3.10'
       - run: pip install alpaca-trade-api
-      - name: Send Report
+      - run: python report.py
         env:
           APCA_API_KEY_1: ${{ secrets.APCA_API_KEY_1 }}
           APCA_API_SECRET_1: ${{ secrets.APCA_API_SECRET_1 }}
@@ -24,4 +40,3 @@ jobs:
           APCA_API_SECRET_2: ${{ secrets.APCA_API_SECRET_2 }}
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
           EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
-        run: python report.py
