@@ -21,6 +21,7 @@ def generate_signals(data, config, return_stats=False):
     }
 
     signal = None
+    # Original Logic: Trend (SMA) + Value (RSI)
     if latest["sma_fast"] > latest["sma_slow"] and latest["rsi"] < config["rsi_oversold"]:
         signal = "buy"
     elif latest["sma_fast"] < latest["sma_slow"] and latest["rsi"] > config["rsi_overbought"]:
