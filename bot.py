@@ -29,12 +29,10 @@ def trade_account(account_info, config):
             bars = api.get_bars(symbol, TimeFrame.Minute, limit=100).df
             if bars.empty: continue
 
-            # Generate signals and get the data used for the decision
             signal, stats = generate_signals(bars, config, return_stats=True)
             price = bars['close'].iloc[-1]
 
-            # --- LOGIC PRINTOUT ---
-            print(f"[{symbol}] Price: ${price:.2f} | SMA({config['sma_fast']}/{config['sma_slow']}): {stats['sma_f']:.2f}/{stats['sma_s']:.2f} | RSI: {stats['rsi']:.1f}")
+            print(f"[{symbol}] Price: ${price:.2f} | SMA: {stats['sma_f']:.2f}/{stats['sma_s']:.2f} | RSI: {stats['rsi']:.1f}")
 
             if signal == 'buy':
                 target_buy_dollars = equity * config['max_trade_pct']
@@ -44,15 +42,13 @@ def trade_account(account_info, config):
                 if current_pos_dollars < max_pos_dollars:
                     qty = int(min(target_buy_dollars, max_pos_dollars - current_pos_dollars) / price)
                     if qty > 0 and is_regular_market_open():
-                        print(f"   ✅ SIGNAL: BUY {qty} shares (Momentum + Oversold)")
+                        print(f"   ✅ SIGNAL: BUY {qty} shares")
                         api.submit_order(symbol, str(qty), 'buy', 'market', 'day')
-                    else:
-                        print(f"   ⏸ SIGNAL: BUY (Market closed or position full)")
             
             elif signal == 'sell' and symbol in positions:
                 qty = int(positions[symbol])
                 if is_regular_market_open():
-                    print(f"   🔥 SIGNAL: SELL {qty} shares (Trend reversal + Overbought)")
+                    print(f"   🔥 SIGNAL: SELL {qty} shares")
                     api.submit_order(symbol, str(qty), 'sell', 'market', 'day')
 
         except Exception as e:
