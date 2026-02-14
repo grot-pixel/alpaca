@@ -1,95 +1,74 @@
 import os
+import json
 from alpaca_trade_api.rest import REST, TimeFrame
 import pandas as pd
+from datetime import datetime, timezone
+from utils import generate_signals
 
-def generate_signal(symbol, api):
-    try:
-        # Aggressive 2-bar trigger: Up = Buy, Down = Sell
-        bars = api.get_bars(symbol, TimeFrame.Minute, limit=2).df
-        if len(bars) < 2: return None, None
-        
-        last_close = bars['close'].iloc[-1]
-        prev_close = bars['close'].iloc[-2]
-        
-        if last_close > prev_close: return 'buy', last_close
-        if last_close < prev_close: return 'sell', last_close
-        return None, None
-    except:
-        return None, None
+def load_config():
+    with open('config.json', 'r') as f:
+        return json.load(f)
 
-def trade_account(acc):
-    api = acc['api']
-    print(f"\n=== DEPLOYING 50% AGGRESSIVE POOL: {acc['name']} ===")
+def is_regular_market_open():
+    now = datetime.now(timezone.utc)
+    # Regular hours: 14:30 - 21:00 UTC (9:30 AM - 4:00 PM ET)
+    return now.hour >= 14 and (now.hour < 21 or (now.hour == 21 and now.minute == 0))
 
-    # NUKE: Cancel all pending orders to unlock buying power immediately
-    api.cancel_all_orders()
+def trade_account(account_info, config):
+    api = account_info['api']
+    print(f"\n--- Trading for {account_info['name']} ---")
 
     try:
         account = api.get_account()
-        # Scale with 50% of current available firepower
-        allocation_pool = float(account.buying_power) * 0.5
-        print(f"Firepower Available: ${allocation_pool:.2f}")
-    except:
-        return
+        equity = float(account.equity)
+        positions = {p.symbol: float(p.qty) for p in api.list_positions()}
+    except Exception as e:
+        print(f"Account Error: {e}"); return
 
-    try:
-        positions = {p.symbol: int(float(p.qty)) for p in api.list_positions()}
-    except:
-        positions = {}
-
-    for symbol in acc['symbols']:
+    for symbol in config['symbols']:
         try:
-            signal, price = generate_signal(symbol, api)
-            if not signal: continue
+            # Fetch bars (Limit 100 to cover SMA 30 + buffer)
+            bars = api.get_bars(symbol, TimeFrame.Minute, limit=100).df
+            if bars.empty: continue
 
-            if signal == 'buy' and allocation_pool > price:
-                # Calculate qty as an integer to avoid format errors
-                qty = int(allocation_pool / price)
-                if qty > 0:
-                    # AGGRESSIVE: Chase price by bidding $0.05 higher
-                    limit_p = round(float(price) + 0.05, 2) 
-                    print(f"🚀 [BUY] {symbol}: {qty} shares (Limit: ${limit_p})")
-                    api.submit_order(
-                        symbol=symbol,
-                        qty=str(qty), # Stringified integer for API safety
-                        side='buy',
-                        type='limit',
-                        time_in_force='day',
-                        limit_price=str(limit_p),
-                        extended_hours=True
-                    )
-                    allocation_pool -= (qty * price)
-            
+            signal = generate_signals(bars, config)
+            price = bars['close'].iloc[-1]
+
+            if signal == 'buy':
+                # Calculate Scalable Quantity
+                # 1. Buy Size (15% of total equity)
+                target_buy_dollars = equity * config['max_trade_pct']
+                # 2. Max Position Size (20% of total equity)
+                max_pos_dollars = equity * config['max_position_pct']
+                current_pos_dollars = positions.get(symbol, 0) * price
+
+                # Only buy if we aren't already at our position cap
+                if current_pos_dollars < max_pos_dollars:
+                    available_to_buy = min(target_buy_dollars, max_pos_dollars - current_pos_dollars)
+                    qty = int(available_to_buy / price)
+
+                    if qty > 0 and is_regular_market_open():
+                        print(f"🚀 [{symbol}] BUY {qty} shares @ ${price}")
+                        api.submit_order(symbol, str(qty), 'buy', 'market', 'day')
+                    else:
+                        print(f"⏸ [{symbol}] Buy signal, but market closed or qty 0.")
+
             elif signal == 'sell' and symbol in positions:
-                qty = positions[symbol]
-                # AGGRESSIVE: Chase price by asking $0.05 lower
-                limit_p = round(float(price) - 0.05, 2)
-                print(f"🔥 [SELL] {symbol}: {qty} shares (Limit: ${limit_p})")
-                api.submit_order(
-                    symbol=symbol,
-                    qty=str(qty),
-                    side='sell',
-                    type='limit',
-                    time_in_force='day',
-                    limit_price=str(limit_p),
-                    extended_hours=True
-                )
+                qty = int(positions[symbol])
+                if is_regular_market_open():
+                    print(f"🔥 [{symbol}] SELL {qty} shares @ ${price}")
+                    api.submit_order(symbol, str(qty), 'sell', 'market', 'day')
 
         except Exception as e:
-            print(f"[{symbol}] Error: {e}")
+            print(f"Error on {symbol}: {e}")
 
-# --- Initialize and Run ---
-for i in [1, 2]:
-    key = os.getenv(f"APCA_API_KEY_{i}")
-    secret = os.getenv(f"APCA_API_SECRET_{i}")
-    base = os.getenv(f"APCA_BASE_URL_{i}") or "https://paper-api.alpaca.markets"
-
-    if key and secret:
-        try:
-            api = REST(key, secret, base)
-            trade_account({
-                "name": f"Account{i}", 
-                "api": api, 
-                "symbols": ['TQQQ','SOXL','AAPL','TSLA','AMD','NVDA']
-            })
-        except: continue
+# Main execution
+if __name__ == "__main__":
+    cfg = load_config()
+    for i in [1, 2]:
+        key = os.getenv(f"APCA_API_KEY_{i}")
+        sec = os.getenv(f"APCA_API_SECRET_{i}")
+        url = os.getenv(f"APCA_BASE_URL_{i}") or "https://paper-api.alpaca.markets"
+        if key and sec:
+            api = REST(key, sec, url)
+            trade_account({"name": f"Account{i}", "api": api}, cfg)
