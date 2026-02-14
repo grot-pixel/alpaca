@@ -3,9 +3,8 @@ name: Alpaca Multi-Account Bot
 on:
   workflow_dispatch:
   schedule:
-    # Starts at 4:00 AM ET (8:00 UTC) through Post-market 8:00 PM ET (00:00 UTC)
-    # Runs every 5 minutes during the entire window
-    - cron: '*/5 8-23 * * 1-5'  
+    # Every 5 mins from 08:00 UTC (4 AM ET) to 00:00 UTC (8 PM ET)
+    - cron: '*/5 8-23 * * 1-5'
 
 jobs:
   run-bot:
