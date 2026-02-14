@@ -1,4 +1,3 @@
-import numpy as np
 import pandas as pd
 
 def rsi(series: pd.Series, period: int = 14):
@@ -10,21 +9,21 @@ def rsi(series: pd.Series, period: int = 14):
 
 def generate_signals(data, config):
     """Return 'buy', 'sell', or None based on SMA + RSI."""
+    # Ensure we have enough data
+    if len(data) < config["sma_slow"]:
+        return None
+
     data["sma_fast"] = data["close"].rolling(config["sma_fast"]).mean()
     data["sma_slow"] = data["close"].rolling(config["sma_slow"]).mean()
     data["rsi"] = rsi(data["close"], config["rsi_period"])
 
     latest = data.iloc[-1]
 
-    if (
-        latest["sma_fast"] > latest["sma_slow"]
-        and latest["rsi"] < config["rsi_oversold"]
-    ):
+    # Original Condition: Fast SMA > Slow SMA AND Oversold RSI
+    if latest["sma_fast"] > latest["sma_slow"] and latest["rsi"] < config["rsi_oversold"]:
         return "buy"
-    elif (
-        latest["sma_fast"] < latest["sma_slow"]
-        and latest["rsi"] > config["rsi_overbought"]
-    ):
+    # Original Condition: Fast SMA < Slow SMA AND Overbought RSI
+    elif latest["sma_fast"] < latest["sma_slow"] and latest["rsi"] > config["rsi_overbought"]:
         return "sell"
-    else:
-        return None
+    
+    return None
