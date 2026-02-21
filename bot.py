@@ -1,5 +1,6 @@
 import os
 import json
+from datetime import datetime, timedelta
 from alpaca_trade_api.rest import REST, TimeFrame
 import pandas as pd
 from utils import generate_signals
@@ -116,10 +117,21 @@ def trade_account(account_info, config):
             continue  # Don't re-enter a symbol just stopped out
 
         try:
-            bars = api.get_bars(symbol, TimeFrame.Minute, limit=200).df
+            # Use explicit date range — limit= alone fails outside market hours
+            end = datetime.utcnow()
+            start = end - timedelta(days=5)  # 5 calendar days covers weekends/holidays
+            bars = api.get_bars(
+                symbol,
+                TimeFrame.Minute,
+                start=start.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                end=end.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                limit=500,
+                adjustment='raw'
+            ).df
             if bars.empty or len(bars) < config['sma_slow'] + 5:
-                print(f"[{symbol}] Not enough data, skipping.")
+                print(f"[{symbol}] Not enough data ({len(bars) if not bars.empty else 0} bars), skipping.")
                 continue
+            bars = bars.tail(200)  # Use most recent 200 bars for signals
 
             signal, stats = generate_signals(bars, config, return_stats=True)
             price = bars['close'].iloc[-1]
