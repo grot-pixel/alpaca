@@ -126,7 +126,8 @@ def trade_account(account_info, config):
                 start=start.strftime('%Y-%m-%dT%H:%M:%SZ'),
                 end=end.strftime('%Y-%m-%dT%H:%M:%SZ'),
                 limit=500,
-                adjustment='raw'
+                adjustment='raw',
+                feed='iex'       # Free tier: IEX feed. Upgrade to 'sip' with paid plan.
             ).df
             if bars.empty or len(bars) < config['sma_slow'] + 5:
                 print(f"[{symbol}] Not enough data ({len(bars) if not bars.empty else 0} bars), skipping.")
