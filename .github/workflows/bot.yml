@@ -3,12 +3,12 @@ name: Alpaca Multi-Account Bot
 on:
   workflow_dispatch:
   schedule:
-    # 7:00 AM CST to 5:55 PM CST
-    - cron: '*/5 13-23 * * 1-5' 
-    # 6:00 PM CST to 7:55 PM CST (Covers After-Hours)
-    - cron: '*/5 0-1 * * 2-6'   
-    # 7:15 PM CST (The Daily Report)
-    - cron: '15 1 * * 2-6'      
+    # Every 5 min: 7:00 AM–5:55 PM CST (market + pre-market), Mon–Fri
+    - cron: '*/5 13-23 * * 1-5'
+    # Every 5 min: 6:00 PM–7:55 PM CST (after-hours), Tue–Sat UTC
+    - cron: '*/5 0-1 * * 2-6'
+    # Daily report: 7:15 PM CST (1:15 AM UTC), Tue–Sat
+    - cron: '15 1 * * 2-6'
 
 jobs:
   run-bot:
@@ -16,35 +16,45 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+
       - uses: actions/setup-python@v4
         with:
           python-version: '3.10'
+
       - name: Install dependencies
         run: pip install alpaca-trade-api pandas numpy
+
       - name: Run Trading Bot
         run: python bot.py
         env:
-          APCA_API_KEY_1: ${{ secrets.APCA_API_KEY_1 }}
+          APCA_API_KEY_1:    ${{ secrets.APCA_API_KEY_1 }}
           APCA_API_SECRET_1: ${{ secrets.APCA_API_SECRET_1 }}
-          APCA_API_KEY_2: ${{ secrets.APCA_API_KEY_2 }}
+          APCA_BASE_URL_1:   ${{ secrets.APCA_BASE_URL_1 }}
+          APCA_API_KEY_2:    ${{ secrets.APCA_API_KEY_2 }}
           APCA_API_SECRET_2: ${{ secrets.APCA_API_SECRET_2 }}
+          APCA_BASE_URL_2:   ${{ secrets.APCA_BASE_URL_2 }}
 
   daily-report:
     if: github.event.schedule == '15 1 * * 2-6' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+
       - uses: actions/setup-python@v4
         with:
           python-version: '3.10'
+
       - name: Install dependencies
         run: pip install alpaca-trade-api
+
       - name: Send Daily Report
         run: python report.py
         env:
-          APCA_API_KEY_1: ${{ secrets.APCA_API_KEY_1 }}
+          APCA_API_KEY_1:    ${{ secrets.APCA_API_KEY_1 }}
           APCA_API_SECRET_1: ${{ secrets.APCA_API_SECRET_1 }}
-          APCA_API_KEY_2: ${{ secrets.APCA_API_KEY_2 }}
+          APCA_BASE_URL_1:   ${{ secrets.APCA_BASE_URL_1 }}
+          APCA_API_KEY_2:    ${{ secrets.APCA_API_KEY_2 }}
           APCA_API_SECRET_2: ${{ secrets.APCA_API_SECRET_2 }}
-          EMAIL_USER: ${{ secrets.EMAIL_USER }}
-          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          APCA_BASE_URL_2:   ${{ secrets.APCA_BASE_URL_2 }}
+          EMAIL_USER:        ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS:        ${{ secrets.EMAIL_PASS }}
