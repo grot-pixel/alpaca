@@ -35,7 +35,7 @@ jobs:
           APCA_BASE_URL_2:   ${{ secrets.APCA_BASE_URL_2 }}
 
   daily-report:
-    if: github.event.schedule == '15 1 * * 2-6' || github.event_name == 'workflow_dispatch'
+    if: github.event.schedule == '15 2 * * 2-6' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
