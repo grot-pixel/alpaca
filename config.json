@@ -1,21 +1,32 @@
 {
-  "symbols": ["TQQQ", "SOXL", "NVDA", "TSLA", "AMD", "AAPL"],
+  "_note": "Alpaca Multi-Strategy Bot — config.json",
 
-  "position_sizing": "NOTE: max_trade_pct per signal, max_position_pct total per symbol",
-  "max_position_pct": 0.40,
-  "max_trade_pct": 0.20,
+  "symbols": [
+    "TQQQ", "SOXL", "NVDA", "TSLA", "AMD", "AAPL",
+    "META", "MSFT", "PLTR", "COIN", "MARA", "QQQ"
+  ],
+
+  "_sizing_note": "max_trade_pct = how much equity to deploy per signal; max_position_pct = max total allocation per symbol",
+  "max_open_positions": 5,
+  "max_position_pct": 0.20,
+  "max_trade_pct": 0.10,
+
+  "_rr_note": "stop must be LESS than take_profit for a positive risk/reward ratio. 3% stop / 6% take = 1:2 R/R",
+  "stop_loss_pct": 0.03,
+  "take_profit_pct": 0.06,
+
+  "_circuit_note": "Bot closes all positions and halts if daily P&L hits either limit",
+  "daily_profit_target_pct": 0.04,
+  "daily_loss_limit_pct": 0.025,
+
+  "_signal_note": "signal_threshold = min confirmations required out of 4 indicators (SMA, RSI, MACD, VWAP)",
+  "signal_threshold": 2,
 
   "rsi_period": 10,
-  "rsi_overbought": 65,
+  "rsi_overbought": 68,
   "rsi_sell_min": 58,
   "rsi_buy_min": 38,
 
   "sma_fast": 8,
-  "sma_slow": 21,
-
-  "stop_loss_pct": 0.02,
-  "take_profit_pct": 0.015,
-
-  "daily_profit_target_pct": 0.03,
-  "daily_loss_limit_pct": 0.02
+  "sma_slow": 21
 }
