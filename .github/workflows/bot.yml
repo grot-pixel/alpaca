@@ -2,10 +2,8 @@ name: Alpaca Trading Bot
 
 on:
   schedule:
-    # Every 5 minutes, Monâ€“Fri, 9:30 AM â€“ 4:00 PM ET (13:30â€“20:00 UTC)
-    # GitHub cron doesn't support minute-level time-of-day filtering,
-    # so we cover 13:00â€“20:00 UTC and let the bot's own market-open check
-    # prevent trades outside market hours.
+    # Every 5 minutes, Mon-Fri, covering 9:00 AM - 4:15 PM ET (13:00-20:15 UTC)
+    # Bot itself checks market-open status and skips if closed
     - cron: '*/5 13-20 * * 1-5'
 
     # Daily performance report at ~4:10 PM ET (20:10 UTC)
@@ -23,11 +21,10 @@ jobs:
   trade:
     name: Run Trading Bot
     runs-on: ubuntu-latest
-
-    # Skip the report-only cron for the trade job
-    if: >
-      github.event_name == 'workflow_dispatch' && github.event.inputs.run_report != 'true'
-      || (github.event_name == 'schedule' && github.event.schedule == '*/5 13-20 * * 1-5')
+    # Simplified condition - avoids github.event.schedule matching issues
+    if: |
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_report != 'true')
 
     steps:
       - name: Checkout repo
@@ -62,11 +59,9 @@ jobs:
   report:
     name: Daily Performance Report
     runs-on: ubuntu-latest
-
-    # Only run for the report cron or manual trigger with run_report=true
-    if: >
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_report == 'true')
-      || (github.event_name == 'schedule' && github.event.schedule == '10 20 * * 1-5')
+    if: |
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_report == 'true') ||
+      github.event_name == 'schedule'
 
     steps:
       - name: Checkout repo
