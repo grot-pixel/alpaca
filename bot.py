@@ -2,7 +2,20 @@ import os
 import json
 from datetime import datetime, timedelta, timezone
 
-from alpaca_trade_api.rest import REST, TimeFrame
+import pandas as pd
+from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import (
+    LimitOrderRequest,
+    MarketOrderRequest,
+    TakeProfitRequest,
+    StopLossRequest,
+    GetOrdersRequest,
+)
+from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass, QueryOrderStatus
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame
+from alpaca.data.enums import DataFeed
 
 from utils import generate_signals
 
@@ -12,51 +25,77 @@ def load_config():
         return json.load(f)
 
 
-def get_equity_snapshot(api):
-    account = api.get_account()
+def get_equity_snapshot(trading_client):
+    account = trading_client.get_account()
     return float(account.equity), float(account.last_equity)
 
 
-def cancel_pending_orders_for_symbol(api, symbol):
+def list_open_orders(trading_client, symbol):
+    req = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol])
+    return trading_client.get_orders(filter=req)
+
+
+def cancel_pending_orders_for_symbol(trading_client, symbol):
     """Idempotency: kill any open orders for this symbol before placing new ones."""
     try:
-        open_orders = api.list_orders(status='open', symbols=[symbol])
-        for o in open_orders:
-            api.cancel_order(o.id)
-            print(f"   ↩︎  Canceled stale {o.side} order {o.id[:8]} on {symbol}")
+        for o in list_open_orders(trading_client, symbol):
+            trading_client.cancel_order_by_id(o.id)
+            print(f"   ↩︎  Canceled stale {o.side} order {str(o.id)[:8]} on {symbol}")
     except Exception as e:
         print(f"   ⚠️  Could not cancel pending orders for {symbol}: {e}")
 
 
-def has_open_order(api, symbol):
+def has_open_order(trading_client, symbol):
     try:
-        return len(api.list_orders(status='open', symbols=[symbol])) > 0
+        return len(list_open_orders(trading_client, symbol)) > 0
     except Exception:
         return False
 
 
+def get_recent_bars(data_client, symbol):
+    """Fetch the last few days of minute bars and return as a flat df indexed by timestamp."""
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=5)
+    req = StockBarsRequest(
+        symbol_or_symbols=symbol,
+        timeframe=TimeFrame.Minute,
+        start=start,
+        end=end,
+        limit=500,
+        feed=DataFeed.IEX,  # Free tier. Switch to DataFeed.SIP with a paid data plan.
+    )
+    bars = data_client.get_stock_bars(req).df
+    if bars is None or bars.empty:
+        return pd.DataFrame()
+    # alpaca-py returns a MultiIndex (symbol, timestamp) — flatten to just timestamp.
+    if isinstance(bars.index, pd.MultiIndex):
+        bars = bars.xs(symbol, level=0)
+    return bars
+
+
 def trade_account(account_info, config):
-    api = account_info['api']
+    trading_client = account_info['trading_client']
+    data_client = account_info['data_client']
     print(f"\n--- 🧠 Trading: {account_info['name']} ---")
 
     try:
-        equity, last_equity = get_equity_snapshot(api)
+        equity, last_equity = get_equity_snapshot(trading_client)
         daily_pnl_pct = (equity - last_equity) / last_equity if last_equity else 0.0
         print(f"  Equity: ${equity:,.2f} | Day P&L: {daily_pnl_pct*100:.2f}%")
 
         # === CIRCUIT BREAKERS ===
         if daily_pnl_pct >= config['daily_profit_target_pct']:
             print(f"  🏆 Daily profit target hit ({daily_pnl_pct*100:.2f}%). Flat & stop.")
-            api.cancel_all_orders()
-            api.close_all_positions()
+            trading_client.cancel_orders()
+            trading_client.close_all_positions(cancel_orders=True)
             return
         if daily_pnl_pct <= -config['daily_loss_limit_pct']:
             print(f"  🚨 Daily loss limit hit ({daily_pnl_pct*100:.2f}%). Flat & stop.")
-            api.cancel_all_orders()
-            api.close_all_positions()
+            trading_client.cancel_orders()
+            trading_client.close_all_positions(cancel_orders=True)
             return
 
-        raw_positions = api.list_positions()
+        raw_positions = trading_client.get_all_positions()
         positions = {
             p.symbol: {
                 'qty': int(float(p.qty)),
@@ -72,17 +111,7 @@ def trade_account(account_info, config):
     # === SIGNAL LOOP ===
     for symbol in config['symbols']:
         try:
-            end = datetime.now(timezone.utc)
-            start = end - timedelta(days=5)
-            bars = api.get_bars(
-                symbol,
-                TimeFrame.Minute,
-                start=start.strftime('%Y-%m-%dT%H:%M:%SZ'),
-                end=end.strftime('%Y-%m-%dT%H:%M:%SZ'),
-                limit=500,
-                adjustment='raw',
-                feed='iex',
-            ).df
+            bars = get_recent_bars(data_client, symbol)
 
             min_bars = max(config['sma_slow'] + 5, config['adx_period'] * 2 + 5, 50)
             if bars.empty or len(bars) < min_bars:
@@ -104,23 +133,26 @@ def trade_account(account_info, config):
 
             current_pos = positions.get(symbol)
 
-            # === EXIT on trend reversal (bracket TP/SL handles the normal exits) ===
+            # === EXIT on trend reversal (bracket TP/SL handles normal exits at the broker) ===
             if signal == 'sell' and current_pos:
-                cancel_pending_orders_for_symbol(api, symbol)
+                cancel_pending_orders_for_symbol(trading_client, symbol)
                 qty = current_pos['qty']
                 print(f"  🔥 EXIT {qty} x {symbol} (trend reversed)")
-                api.submit_order(
-                    symbol=symbol, qty=str(qty), side='sell',
-                    type='market', time_in_force='day',
+                exit_req = MarketOrderRequest(
+                    symbol=symbol,
+                    qty=qty,
+                    side=OrderSide.SELL,
+                    time_in_force=TimeInForce.DAY,
                 )
+                trading_client.submit_order(order_data=exit_req)
                 continue
 
             # === ENTRY ===
-            if signal == 'buy' and not current_pos and not has_open_order(api, symbol):
+            if signal == 'buy' and not current_pos and not has_open_order(trading_client, symbol):
                 # Vol-targeted sizing: each trade risks risk_per_trade_pct of equity
                 stop_distance = atr_val * config['atr_stop_mult']
                 tp_distance = atr_val * config['atr_take_profit_mult']
-                if stop_distance <= 0:
+                if stop_distance <= 0 or pd.isna(stop_distance):
                     print(f"  ⏸ Bad ATR, skipping")
                     continue
 
@@ -141,23 +173,23 @@ def trade_account(account_info, config):
                 tp_price = round(price + tp_distance, 2)
                 sl_price = round(price - stop_distance, 2)
 
-                cancel_pending_orders_for_symbol(api, symbol)
+                cancel_pending_orders_for_symbol(trading_client, symbol)
                 print(
                     f"  ✅ BUY {qty} x {symbol} @ limit ${limit_price} "
                     f"(TP ${tp_price} / SL ${sl_price}, "
                     f"risk ${qty*stop_distance:.0f})"
                 )
-                api.submit_order(
+                bracket_req = LimitOrderRequest(
                     symbol=symbol,
-                    qty=str(qty),
-                    side='buy',
-                    type='limit',
-                    limit_price=str(limit_price),
-                    time_in_force='day',
-                    order_class='bracket',
-                    take_profit={'limit_price': str(tp_price)},
-                    stop_loss={'stop_price': str(sl_price)},
+                    qty=qty,
+                    side=OrderSide.BUY,
+                    time_in_force=TimeInForce.DAY,
+                    limit_price=limit_price,
+                    order_class=OrderClass.BRACKET,
+                    take_profit=TakeProfitRequest(limit_price=tp_price),
+                    stop_loss=StopLossRequest(stop_price=sl_price),
                 )
+                trading_client.submit_order(order_data=bracket_req)
 
         except Exception as e:
             print(f"  ❌ Error on {symbol}: {e}")
@@ -170,5 +202,14 @@ if __name__ == "__main__":
         sec = os.getenv(f"APCA_API_SECRET_{i}")
         url = os.getenv(f"APCA_BASE_URL_{i}") or "https://paper-api.alpaca.markets"
         if key and sec:
-            api = REST(key, sec, url)
-            trade_account({"name": f"Account{i}", "api": api}, cfg)
+            paper = "paper" in url.lower()
+            trading_client = TradingClient(api_key=key, secret_key=sec, paper=paper)
+            data_client = StockHistoricalDataClient(api_key=key, secret_key=sec)
+            trade_account(
+                {
+                    "name": f"Account{i}",
+                    "trading_client": trading_client,
+                    "data_client": data_client,
+                },
+                cfg,
+            )
