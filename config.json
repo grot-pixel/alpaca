@@ -3,7 +3,7 @@
 
   "_position_sizing_note": "Risk-based sizing: each trade risks risk_per_trade_pct of equity, sized by ATR distance. max_position_pct caps the dollar exposure.",
   "max_position_pct": 0.25,
-  "risk_per_trade_pct": 0.005,
+  "risk_per_trade_pct": 0.015,
 
   "_signal_note": "Trend-pullback strategy. Regime gate (ADX) + trend (SMA) + timing (RSI pullback) + VWAP alignment.",
   "sma_fast": 8,
