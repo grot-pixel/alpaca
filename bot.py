@@ -1,7 +1,7 @@
 import os
 import json
 from datetime import datetime, timedelta, timezone
-
+from zoneinfo import ZoneInfo
 import pandas as pd
 
 from alpaca.trading.client import TradingClient
