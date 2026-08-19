@@ -2,12 +2,12 @@ import os
 import json
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+
 import pandas as pd
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
     MarketOrderRequest,
-    LimitOrderRequest,
     TakeProfitRequest,
     StopLossRequest,
     GetOrdersRequest,
@@ -29,6 +29,10 @@ from utils import generate_signals
 
 CONFIG_FILE = "config.json"
 
+
+# ============================================================
+# CONFIG
+# ============================================================
 
 def load_config():
     with open(CONFIG_FILE, "r") as f:
@@ -55,7 +59,6 @@ def get_account_snapshot(trading_client):
 # ============================================================
 
 def get_open_orders(trading_client, symbol=None):
-
     try:
         if symbol:
             request = GetOrdersRequest(
@@ -72,12 +75,13 @@ def get_open_orders(trading_client, symbol=None):
         )
 
     except Exception as e:
-        print(f"⚠️ Could not retrieve open orders: {e}")
+        print(
+            f"⚠️ Could not retrieve open orders: {e}"
+        )
         return []
 
 
 def has_open_order(trading_client, symbol):
-
     return len(
         get_open_orders(
             trading_client,
@@ -90,16 +94,13 @@ def cancel_pending_orders_for_symbol(
     trading_client,
     symbol,
 ):
-
     orders = get_open_orders(
         trading_client,
         symbol,
     )
 
     for order in orders:
-
         try:
-
             trading_client.cancel_order_by_id(
                 order.id
             )
@@ -112,7 +113,6 @@ def cancel_pending_orders_for_symbol(
             )
 
         except Exception as e:
-
             print(
                 f"   ⚠️ Could not cancel "
                 f"{symbol} order: {e}"
@@ -124,7 +124,6 @@ def cancel_pending_orders_for_symbol(
 # ============================================================
 
 def get_positions(trading_client):
-
     positions = {}
 
     for p in trading_client.get_all_positions():
@@ -135,9 +134,15 @@ def get_positions(trading_client):
             "qty": qty,
             "avg_cost": float(p.avg_entry_price),
             "price": float(p.current_price),
-            "market_value": abs(float(p.market_value)),
-            "unrealized_pl": float(p.unrealized_pl),
-            "unrealized_plpc": float(p.unrealized_plpc),
+            "market_value": abs(
+                float(p.market_value)
+            ),
+            "unrealized_pl": float(
+                p.unrealized_pl
+            ),
+            "unrealized_plpc": float(
+                p.unrealized_plpc
+            ),
         }
 
     return positions
@@ -152,12 +157,13 @@ def get_recent_bars(
     symbol,
     config,
 ):
-
     end = datetime.now(timezone.utc)
 
-    # Enough history for SMA / MACD / ATR / ADX
     start = end - timedelta(
-        days=config["data_lookback_days"]
+        days=config.get(
+            "data_lookback_days",
+            10,
+        )
     )
 
     request = StockBarsRequest(
@@ -165,7 +171,10 @@ def get_recent_bars(
         timeframe=TimeFrame.Minute,
         start=start,
         end=end,
-        limit=config["data_max_bars"],
+        limit=config.get(
+            "data_max_bars",
+            3000,
+        ),
         feed=DataFeed.IEX,
     )
 
@@ -176,14 +185,21 @@ def get_recent_bars(
     if bars is None or bars.empty:
         return pd.DataFrame()
 
+    # Alpaca may return a MultiIndex:
+    #
+    # symbol / timestamp
+    #
     if isinstance(
         bars.index,
         pd.MultiIndex,
     ):
-        bars = bars.xs(
-            symbol,
-            level=0,
-        )
+        try:
+            bars = bars.xs(
+                symbol,
+                level=0,
+            )
+        except KeyError:
+            return pd.DataFrame()
 
     bars = bars.sort_index()
 
@@ -191,20 +207,21 @@ def get_recent_bars(
 
 
 # ============================================================
-# TIME FILTER
+# MARKET TIME
 # ============================================================
 
 def is_trade_time(config):
+    """
+    Determine whether the current time is inside
+    the configured trading window.
 
-    now = datetime.now(
-        timezone.utc
-    )
+    Uses America/New_York so DST is handled automatically.
+    """
+
+    now = datetime.now(timezone.utc)
 
     eastern = now.astimezone(
-        __import__("zoneinfo")
-        .zoneinfo.ZoneInfo(
-            "America/New_York"
-        )
+        ZoneInfo("America/New_York")
     )
 
     minutes = (
@@ -213,65 +230,47 @@ def is_trade_time(config):
     )
 
     start = (
-        config["trade_start_hour"] * 60
-        + config["trade_start_minute"]
+        config.get("trade_start_hour", 9) * 60
+        + config.get("trade_start_minute", 45)
     )
 
     end = (
-        config["trade_end_hour"] * 60
-        + config["trade_end_minute"]
+        config.get("trade_end_hour", 15) * 60
+        + config.get("trade_end_minute", 30)
     )
 
-    return start <= minutes <= end
+    in_window = (
+        start <= minutes <= end
+    )
+
+    print(
+        f"  🕐 Market time: "
+        f"{eastern.strftime('%Y-%m-%d %H:%M:%S %Z')} | "
+        f"Trading window: "
+        f"{config.get('trade_start_hour', 9):02d}:"
+        f"{config.get('trade_start_minute', 45):02d}–"
+        f"{config.get('trade_end_hour', 15):02d}:"
+        f"{config.get('trade_end_minute', 30):02d} | "
+        f"{'OPEN' if in_window else 'CLOSED'}"
+    )
+
+    return in_window
 
 
 # ============================================================
 # PORTFOLIO RISK
 # ============================================================
 
-def calculate_open_risk(
-    positions,
-    equity,
-    config,
-):
-
-    total_risk = 0.0
-
-    for symbol, position in positions.items():
-
-        atr = position.get(
-            "atr",
-            0
-        )
-
-        if atr <= 0:
-            continue
-
-        stop_distance = (
-            atr
-            * config["atr_stop_mult"]
-        )
-
-        total_risk += (
-            position["qty"]
-            * stop_distance
-        )
-
-    if equity <= 0:
-        return 0.0
-
-    return total_risk / equity
-
-
 def correlation_group(
     symbol,
     config,
 ):
+    groups = config.get(
+        "correlation_groups",
+        {},
+    )
 
-    for group, symbols in config[
-        "correlation_groups"
-    ].items():
-
+    for group, symbols in groups.items():
         if symbol in symbols:
             return group
 
@@ -284,13 +283,16 @@ def group_exposure(
     group,
     config,
 ):
-
     if equity <= 0:
         return 0.0
 
-    symbols = config[
-        "correlation_groups"
-    ].get(group, [])
+    symbols = config.get(
+        "correlation_groups",
+        {},
+    ).get(
+        group,
+        [],
+    )
 
     exposure = sum(
         position["market_value"]
@@ -302,6 +304,34 @@ def group_exposure(
     return exposure / equity
 
 
+def calculate_existing_risk(
+    positions,
+    equity,
+    config,
+):
+    """
+    Conservative estimate of existing portfolio
+    stop risk.
+
+    We use configured risk_per_trade_pct for each
+    existing position because the broker does not
+    expose our original strategy stop directly.
+    """
+
+    if equity <= 0:
+        return 0.0
+
+    risk_per_trade = config.get(
+        "risk_per_trade_pct",
+        0.005,
+    )
+
+    return (
+        len(positions)
+        * risk_per_trade
+    )
+
+
 # ============================================================
 # DAILY CIRCUIT BREAKER
 # ============================================================
@@ -310,11 +340,10 @@ def circuit_breaker_hit(
     snapshot,
     config,
 ):
-
     equity = snapshot["equity"]
     last_equity = snapshot["last_equity"]
 
-    if not last_equity:
+    if last_equity <= 0:
         return False
 
     daily_return = (
@@ -326,9 +355,12 @@ def circuit_breaker_hit(
         f"{daily_return * 100:+.2f}%"
     )
 
-    if daily_return <= -config[
-        "daily_loss_limit_pct"
-    ]:
+    daily_limit = config.get(
+        "daily_loss_limit_pct",
+        0.02,
+    )
+
+    if daily_return <= -daily_limit:
 
         print(
             "🚨 DAILY LOSS LIMIT HIT"
@@ -340,31 +372,31 @@ def circuit_breaker_hit(
 
 
 def flatten_account(
-    trading_client
+    trading_client,
 ):
-
     print(
         "🛑 Flattening account..."
     )
 
     try:
         trading_client.cancel_orders()
-    except Exception:
-        pass
+    except Exception as e:
+        print(
+            f"⚠️ Could not cancel orders: {e}"
+        )
 
     try:
         trading_client.close_all_positions(
             cancel_orders=True
         )
     except Exception as e:
-
         print(
             f"⚠️ Flatten failed: {e}"
         )
 
 
 # ============================================================
-# POSITION SIZE
+# POSITION SIZING
 # ============================================================
 
 def calculate_position_size(
@@ -373,6 +405,15 @@ def calculate_position_size(
     atr_value,
     config,
 ):
+    """
+    Position size based on:
+
+        risk dollars
+        --------------------
+        distance to stop
+
+    Then capped by max_position_pct.
+    """
 
     if (
         equity <= 0
@@ -383,12 +424,21 @@ def calculate_position_size(
 
     stop_distance = (
         atr_value
-        * config["atr_stop_mult"]
+        * config.get(
+            "atr_stop_mult",
+            2.0,
+        )
     )
+
+    if stop_distance <= 0:
+        return 0.0
 
     risk_dollars = (
         equity
-        * config["risk_per_trade_pct"]
+        * config.get(
+            "risk_per_trade_pct",
+            0.005,
+        )
     )
 
     qty_by_risk = (
@@ -398,7 +448,10 @@ def calculate_position_size(
 
     max_position_dollars = (
         equity
-        * config["max_position_pct"]
+        * config.get(
+            "max_position_pct",
+            0.15,
+        )
     )
 
     qty_by_position = (
@@ -412,7 +465,7 @@ def calculate_position_size(
     )
 
     return round(
-        max(qty, 0),
+        max(qty, 0.0),
         6,
     )
 
@@ -429,16 +482,28 @@ def submit_entry(
     atr_value,
     config,
 ):
-
     stop_distance = (
         atr_value
-        * config["atr_stop_mult"]
+        * config.get(
+            "atr_stop_mult",
+            2.0,
+        )
     )
 
     target_distance = (
         atr_value
-        * config["atr_take_profit_mult"]
+        * config.get(
+            "atr_take_profit_mult",
+            4.0,
+        )
     )
+
+    if stop_distance <= 0:
+        print(
+            f"  ⏸ {symbol}: "
+            "invalid stop distance"
+        )
+        return None
 
     stop_price = round(
         price - stop_distance,
@@ -455,9 +520,12 @@ def submit_entry(
         / stop_distance
     )
 
-    if actual_rr < config[
-        "minimum_reward_risk"
-    ]:
+    minimum_rr = config.get(
+        "minimum_reward_risk",
+        1.75,
+    )
+
+    if actual_rr < minimum_rr:
 
         print(
             f"  ⏸ {symbol}: "
@@ -468,7 +536,8 @@ def submit_entry(
         return None
 
     print(
-        f"  🟢 BUY {qty:.4f} {symbol} "
+        f"  🟢 BUY "
+        f"{qty:.4f} {symbol} "
         f"@ ${price:.2f}"
     )
 
@@ -478,8 +547,6 @@ def submit_entry(
         f"R/R: {actual_rr:.2f}"
     )
 
-    # Use market entry rather than a limit
-    # 0.1% ABOVE the market.
     request = MarketOrderRequest(
         symbol=symbol,
         qty=qty,
@@ -494,9 +561,27 @@ def submit_entry(
         ),
     )
 
-    return trading_client.submit_order(
-        order_data=request
-    )
+    try:
+
+        order = trading_client.submit_order(
+            order_data=request
+        )
+
+        print(
+            f"  ✅ Order submitted: "
+            f"{order.id}"
+        )
+
+        return order
+
+    except Exception as e:
+
+        print(
+            f"  ❌ Order failed for "
+            f"{symbol}: {e}"
+        )
+
+        return None
 
 
 # ============================================================
@@ -508,7 +593,13 @@ def exit_position(
     symbol,
     position,
 ):
+    print(
+        f"  🔴 EXIT "
+        f"{position['qty']:.4f} "
+        f"{symbol}"
+    )
 
+    # Cancel bracket/other pending orders first.
     cancel_pending_orders_for_symbol(
         trading_client,
         symbol,
@@ -517,12 +608,7 @@ def exit_position(
     qty = position["qty"]
 
     if qty <= 0:
-        return
-
-    print(
-        f"  🔴 EXIT "
-        f"{qty:.4f} {symbol}"
-    )
+        return None
 
     request = MarketOrderRequest(
         symbol=symbol,
@@ -531,20 +617,37 @@ def exit_position(
         time_in_force=TimeInForce.DAY,
     )
 
-    trading_client.submit_order(
-        order_data=request
-    )
+    try:
+
+        order = trading_client.submit_order(
+            order_data=request
+        )
+
+        print(
+            f"  ✅ Exit submitted: "
+            f"{order.id}"
+        )
+
+        return order
+
+    except Exception as e:
+
+        print(
+            f"  ❌ Exit failed for "
+            f"{symbol}: {e}"
+        )
+
+        return None
 
 
 # ============================================================
-# MAIN ACCOUNT LOOP
+# ACCOUNT TRADING
 # ============================================================
 
 def trade_account(
     account_info,
     config,
 ):
-
     trading_client = (
         account_info["trading_client"]
     )
@@ -554,17 +657,16 @@ def trade_account(
     )
 
     print()
-    print(
-        "=" * 60
-    )
+    print("=" * 60)
 
     print(
-        f"🧠 Trading {account_info['name']}"
+        f"🧠 Trading "
+        f"{account_info['name']}"
     )
 
-    # --------------------------------------------------------
-    # Account
-    # --------------------------------------------------------
+    # ========================================================
+    # ACCOUNT SNAPSHOT
+    # ========================================================
 
     try:
 
@@ -572,13 +674,21 @@ def trade_account(
             trading_client
         )
 
-        equity = snapshot[
-            "equity"
-        ]
+        equity = snapshot["equity"]
 
         print(
             f"Equity: "
             f"${equity:,.2f}"
+        )
+
+        print(
+            f"Cash: "
+            f"${snapshot['cash']:,.2f}"
+        )
+
+        print(
+            f"Buying Power: "
+            f"${snapshot['buying_power']:,.2f}"
         )
 
     except Exception as e:
@@ -589,9 +699,9 @@ def trade_account(
 
         return
 
-    # --------------------------------------------------------
-    # Daily loss circuit breaker
-    # --------------------------------------------------------
+    # ========================================================
+    # DAILY LOSS CIRCUIT BREAKER
+    # ========================================================
 
     if circuit_breaker_hit(
         snapshot,
@@ -604,9 +714,9 @@ def trade_account(
 
         return
 
-    # --------------------------------------------------------
-    # Time filter
-    # --------------------------------------------------------
+    # ========================================================
+    # TRADING WINDOW
+    # ========================================================
 
     if not is_trade_time(config):
 
@@ -617,9 +727,9 @@ def trade_account(
 
         return
 
-    # --------------------------------------------------------
-    # Existing positions
-    # --------------------------------------------------------
+    # ========================================================
+    # EXISTING POSITIONS
+    # ========================================================
 
     try:
 
@@ -640,15 +750,39 @@ def trade_account(
         f"{len(positions)}"
     )
 
-    # --------------------------------------------------------
-    # Scan symbols
-    # --------------------------------------------------------
+    # ========================================================
+    # EXISTING PORTFOLIO RISK
+    # ========================================================
 
-    for symbol in config[
-        "symbols"
-    ]:
+    existing_risk = (
+        calculate_existing_risk(
+            positions,
+            equity,
+            config,
+        )
+    )
+
+    print(
+        f"Estimated open risk: "
+        f"{existing_risk * 100:.2f}%"
+    )
+
+    # ========================================================
+    # SCAN SYMBOLS
+    # ========================================================
+
+    symbols = config.get(
+        "symbols",
+        [],
+    )
+
+    for symbol in symbols:
 
         try:
+
+            # ------------------------------------------------
+            # DATA
+            # ------------------------------------------------
 
             bars = get_recent_bars(
                 data_client,
@@ -657,11 +791,26 @@ def trade_account(
             )
 
             minimum_bars = max(
-                config["sma_slow"] + 20,
-                config["macd_slow"]
-                + config["macd_signal"]
+                config.get(
+                    "sma_slow",
+                    21,
+                ) + 20,
+
+                config.get(
+                    "macd_slow",
+                    26,
+                )
+                + config.get(
+                    "macd_signal",
+                    9,
+                )
                 + 20,
-                config["adx_period"] * 3,
+
+                config.get(
+                    "adx_period",
+                    14,
+                ) * 3,
+
                 100,
             )
 
@@ -678,6 +827,10 @@ def trade_account(
                 )
 
                 continue
+
+            # ------------------------------------------------
+            # SIGNAL
+            # ------------------------------------------------
 
             signal, stats = (
                 generate_signals(
@@ -699,20 +852,26 @@ def trade_account(
                 f"{stats['plus_di']:.1f}/"
                 f"{stats['minus_di']:.1f} | "
                 f"RSI {stats['rsi']:.1f} | "
-                f"ATR {stats['atr_pct'] * 100:.2f}% | "
-                f"MACD {stats['macd_hist']:.4f} | "
+                f"ATR "
+                f"{stats['atr_pct'] * 100:.2f}% | "
+                f"MACD "
+                f"{stats['macd_hist']:.4f} | "
                 f"Score "
                 f"{stats['bullish_score']} | "
                 f"→ {signal or '-'}"
             )
 
-            current_position = positions.get(
-                symbol
+            # ------------------------------------------------
+            # CURRENT POSITION
+            # ------------------------------------------------
+
+            current_position = (
+                positions.get(symbol)
             )
 
-            # ------------------------------------------------
+            # =================================================
             # EXIT
-            # ------------------------------------------------
+            # =================================================
 
             if (
                 signal == "sell"
@@ -727,29 +886,55 @@ def trade_account(
 
                 continue
 
-            # ------------------------------------------------
-            # ENTRY
-            # ------------------------------------------------
+            # =================================================
+            # NO ENTRY SIGNAL
+            # =================================================
 
             if signal != "buy":
                 continue
 
+            # =================================================
+            # ALREADY LONG
+            # =================================================
+
             if current_position:
+
+                print(
+                    f"  ⏸ {symbol}: "
+                    "already holding"
+                )
+
                 continue
+
+            # =================================================
+            # PENDING ORDER
+            # =================================================
 
             if has_open_order(
                 trading_client,
                 symbol,
             ):
+
+                print(
+                    f"  ⏸ {symbol}: "
+                    "open order already exists"
+                )
+
                 continue
 
-            # ------------------------------------------------
-            # Max positions
-            # ------------------------------------------------
+            # =================================================
+            # MAX POSITIONS
+            # =================================================
 
-            if len(positions) >= config[
-                "max_open_positions"
-            ]:
+            max_positions = config.get(
+                "max_open_positions",
+                4,
+            )
+
+            if (
+                len(positions)
+                >= max_positions
+            ):
 
                 print(
                     f"  ⏸ {symbol}: "
@@ -758,9 +943,9 @@ def trade_account(
 
                 continue
 
-            # ------------------------------------------------
-            # Correlation exposure
-            # ------------------------------------------------
+            # =================================================
+            # CORRELATION GROUP
+            # =================================================
 
             group = correlation_group(
                 symbol,
@@ -774,9 +959,15 @@ def trade_account(
                 config,
             )
 
-            if group_exp >= config[
-                "max_correlation_exposure"
-            ]:
+            max_group_exp = config.get(
+                "max_correlation_exposure",
+                0.35,
+            )
+
+            if (
+                group_exp
+                >= max_group_exp
+            ):
 
                 print(
                     f"  ⏸ {symbol}: "
@@ -786,9 +977,9 @@ def trade_account(
 
                 continue
 
-            # ------------------------------------------------
-            # Position sizing
-            # ------------------------------------------------
+            # =================================================
+            # POSITION SIZE
+            # =================================================
 
             qty = calculate_position_size(
                 equity=equity,
@@ -806,29 +997,30 @@ def trade_account(
 
                 continue
 
+            # =================================================
+            # CORRELATION EXPOSURE CAP
+            # =================================================
+
             position_dollars = (
                 qty * price
             )
 
-            # ------------------------------------------------
-            # Correlation cap
-            # ------------------------------------------------
+            new_group_exposure = (
+                position_dollars
+                / equity
+            )
 
             if (
                 group_exp
-                + position_dollars / equity
-                > config[
-                    "max_correlation_exposure"
-                ]
+                + new_group_exposure
+                > max_group_exp
             ):
 
                 allowed_dollars = max(
-                    0,
+                    0.0,
                     equity
                     * (
-                        config[
-                            "max_correlation_exposure"
-                        ]
+                        max_group_exp
                         - group_exp
                     ),
                 )
@@ -839,22 +1031,29 @@ def trade_account(
                 )
 
                 qty = round(
-                    max(qty, 0),
+                    max(qty, 0.0),
                     6,
                 )
 
             if qty <= 0:
+
+                print(
+                    f"  ⏸ {symbol}: "
+                    "correlation cap"
+                )
+
                 continue
 
-            # ------------------------------------------------
-            # Portfolio risk cap
-            # ------------------------------------------------
+            # =================================================
+            # PORTFOLIO RISK CAP
+            # =================================================
 
             stop_distance = (
                 stats["atr"]
-                * config[
-                    "atr_stop_mult"
-                ]
+                * config.get(
+                    "atr_stop_mult",
+                    2.0,
+                )
             )
 
             new_trade_risk = (
@@ -863,36 +1062,36 @@ def trade_account(
                 / equity
             )
 
-            existing_risk = 0.0
-
-            for p_symbol, p in positions.items():
-
-                # Conservative estimate:
-                # use configured per-trade risk.
-                existing_risk += config[
-                    "risk_per_trade_pct"
-                ]
+            max_portfolio_risk = (
+                config.get(
+                    "max_portfolio_risk",
+                    0.02,
+                )
+            )
 
             if (
                 existing_risk
                 + new_trade_risk
-                > config[
-                    "max_portfolio_risk"
-                ]
+                > max_portfolio_risk
             ):
 
                 print(
                     f"  ⏸ {symbol}: "
-                    "portfolio risk cap"
+                    f"portfolio risk cap "
+                    f"("
+                    f"{(existing_risk + new_trade_risk) * 100:.2f}%"
+                    f" > "
+                    f"{max_portfolio_risk * 100:.2f}%"
+                    f")"
                 )
 
                 continue
 
-            # ------------------------------------------------
-            # Submit
-            # ------------------------------------------------
+            # =================================================
+            # SUBMIT ENTRY
+            # =================================================
 
-            submit_entry(
+            order = submit_entry(
                 trading_client,
                 symbol,
                 qty,
@@ -901,20 +1100,80 @@ def trade_account(
                 config,
             )
 
+            if order:
+
+                # Keep our local position count
+                # conservative during this scan.
+                positions[symbol] = {
+                    "qty": qty,
+                    "avg_cost": price,
+                    "price": price,
+                    "market_value": qty * price,
+                    "unrealized_pl": 0.0,
+                    "unrealized_plpc": 0.0,
+                }
+
+                existing_risk += (
+                    new_trade_risk
+                )
+
         except Exception as e:
 
             print(
-                f"  ❌ {symbol}: {e}"
+                f"  ❌ {symbol}: "
+                f"{type(e).__name__}: {e}"
             )
+
+    print()
+    print(
+        f"✅ Finished "
+        f"{account_info['name']}"
+    )
 
 
 # ============================================================
-# ENTRY POINT
+# MAIN
 # ============================================================
 
 if __name__ == "__main__":
 
     config = load_config()
+
+    print()
+    print("=" * 60)
+    print("🚀 ALPACA TRADING BOT")
+    print("=" * 60)
+
+    print(
+        f"Symbols: "
+        f"{', '.join(config.get('symbols', []))}"
+    )
+
+    print(
+        f"Risk/trade: "
+        f"{config.get('risk_per_trade_pct', 0.005) * 100:.2f}%"
+    )
+
+    print(
+        f"Max portfolio risk: "
+        f"{config.get('max_portfolio_risk', 0.02) * 100:.2f}%"
+    )
+
+    print(
+        f"Max position: "
+        f"{config.get('max_position_pct', 0.15) * 100:.1f}%"
+    )
+
+    print(
+        f"Max positions: "
+        f"{config.get('max_open_positions', 4)}"
+    )
+
+    print("=" * 60)
+
+    # ========================================================
+    # MULTIPLE ACCOUNTS
+    # ========================================================
 
     for i in [1, 2]:
 
@@ -932,6 +1191,12 @@ if __name__ == "__main__":
         )
 
         if not key or not secret:
+
+            print(
+                f"ℹ️ Account{i} "
+                "credentials not configured."
+            )
+
             continue
 
         paper = (
@@ -939,24 +1204,44 @@ if __name__ == "__main__":
             in url.lower()
         )
 
-        trading_client = TradingClient(
-            api_key=key,
-            secret_key=secret,
-            paper=paper,
+        print()
+        print(
+            f"Connecting Account{i} "
+            f"({'PAPER' if paper else 'LIVE'})..."
         )
 
-        data_client = (
-            StockHistoricalDataClient(
+        try:
+
+            trading_client = TradingClient(
                 api_key=key,
                 secret_key=secret,
+                paper=paper,
             )
-        )
 
-        trade_account(
-            {
-                "name": f"Account{i}",
-                "trading_client": trading_client,
-                "data_client": data_client,
-            },
-            config,
-        )
+            data_client = (
+                StockHistoricalDataClient(
+                    api_key=key,
+                    secret_key=secret,
+                )
+            )
+
+            trade_account(
+                {
+                    "name": f"Account{i}",
+                    "trading_client": trading_client,
+                    "data_client": data_client,
+                },
+                config,
+            )
+
+        except Exception as e:
+
+            print(
+                f"❌ Account{i} failed: "
+                f"{type(e).__name__}: {e}"
+            )
+
+    print()
+    print("=" * 60)
+    print("🏁 BOT RUN COMPLETE")
+    print("=" * 60)
