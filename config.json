@@ -1,24 +1,71 @@
 {
-  "symbols": ["TQQQ", "SOXL", "NVDA", "TSLA", "AMD", "AAPL"],
+  "symbols": [
+    "TQQQ",
+    "SOXL",
+    "NVDA",
+    "AMD",
+    "TSLA",
+    "AAPL"
+  ],
 
-  "_position_sizing_note": "Risk-based sizing: each trade risks risk_per_trade_pct of equity, sized by ATR distance. max_position_pct caps the dollar exposure.",
-  "max_position_pct": 0.25,
-  "risk_per_trade_pct": 0.015,
+  "max_open_positions": 4,
 
-  "_signal_note": "Trend-pullback strategy. Regime gate (ADX) + trend (SMA) + timing (RSI pullback) + VWAP alignment.",
+  "max_position_pct": 0.15,
+
+  "risk_per_trade_pct": 0.005,
+
+  "max_portfolio_risk": 0.02,
+
+  "max_correlation_exposure": 0.35,
+
+  "correlation_groups": {
+    "mega_cap_growth": [
+      "AAPL",
+      "NVDA",
+      "AMD",
+      "TSLA"
+    ],
+
+    "leveraged_growth": [
+      "TQQQ",
+      "SOXL"
+    ]
+  },
+
   "sma_fast": 8,
   "sma_slow": 21,
+
   "rsi_period": 14,
-  "rsi_buy_max": 45,
+  "rsi_pullback_max": 45,
+  "rsi_recovery_min": 42,
   "rsi_sell_min": 55,
+
   "adx_period": 14,
   "adx_min": 22,
+  "min_di_spread": 3.0,
 
-  "_exit_note": "ATR-based stops/targets give 2:1 reward-to-risk by default. Even at 50% win rate, expectation is positive.",
+  "macd_fast": 12,
+  "macd_slow": 26,
+  "macd_signal": 9,
+
   "atr_period": 14,
+
   "atr_stop_mult": 2.0,
   "atr_take_profit_mult": 4.0,
 
-  "daily_profit_target_pct": 0.03,
-  "daily_loss_limit_pct": 0.02
+  "minimum_reward_risk": 1.75,
+
+  "min_atr_pct": 0.0025,
+  "max_atr_pct": 0.035,
+
+  "daily_loss_limit_pct": 0.02,
+
+  "trade_start_hour": 9,
+  "trade_start_minute": 45,
+
+  "trade_end_hour": 15,
+  "trade_end_minute": 30,
+
+  "data_lookback_days": 10,
+  "data_max_bars": 3000
 }
