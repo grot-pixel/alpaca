@@ -1,0 +1,45 @@
+name: Daily Trading Report
+
+on:
+  schedule:
+    - cron: "40 15 * * 1-5"
+      timezone: "America/New_York"
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    name: Send Daily Report
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Send report
+        env:
+          APCA_API_KEY_1: ${{ secrets.APCA_API_KEY_1 }}
+          APCA_API_SECRET_1: ${{ secrets.APCA_API_SECRET_1 }}
+          APCA_BASE_URL_1: ${{ secrets.APCA_BASE_URL_1 }}
+
+          APCA_API_KEY_2: ${{ secrets.APCA_API_KEY_2 }}
+          APCA_API_SECRET_2: ${{ secrets.APCA_API_SECRET_2 }}
+          APCA_BASE_URL_2: ${{ secrets.APCA_BASE_URL_2 }}
+
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+        run: |
+          python report.py
