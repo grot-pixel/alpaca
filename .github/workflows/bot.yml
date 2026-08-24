@@ -2,15 +2,10 @@ name: Run Trading Bot
 
 on:
   schedule:
-    # Every 5 minutes, Monday-Friday, in Eastern Time.
-    #
-    # GitHub supports IANA timezone-aware schedules, so
-    # DST is handled automatically.
-    - cron: "2-59/5 9-15 * * 1-5"
+    - cron: "2-59/5 9-14 * * 1-5"
       timezone: "America/New_York"
 
-    # Continue the 5-minute schedule through 3:59 PM.
-    - cron: "2-59/5 15 * * 1-5"
+    - cron: "2-29/5 15 * * 1-5"
       timezone: "America/New_York"
 
   workflow_dispatch:
@@ -26,7 +21,6 @@ jobs:
   trade:
     name: Execute Trading Bot
     runs-on: ubuntu-latest
-
     timeout-minutes: 5
 
     steps:
@@ -47,14 +41,12 @@ jobs:
       - name: Validate configuration
         run: |
           python -m json.tool config.json > /dev/null
-          echo "config.json is valid JSON."
 
       - name: Run trading bot
         env:
           APCA_API_KEY_1: ${{ secrets.APCA_API_KEY_1 }}
           APCA_API_SECRET_1: ${{ secrets.APCA_API_SECRET_1 }}
           APCA_BASE_URL_1: ${{ secrets.APCA_BASE_URL_1 }}
-
           APCA_API_KEY_2: ${{ secrets.APCA_API_KEY_2 }}
           APCA_API_SECRET_2: ${{ secrets.APCA_API_SECRET_2 }}
           APCA_BASE_URL_2: ${{ secrets.APCA_BASE_URL_2 }}
@@ -64,9 +56,6 @@ jobs:
   report:
     name: Daily Performance Report
     runs-on: ubuntu-latest
-
-    # Only run the report from the scheduled workflow,
-    # not when manually dispatching the bot.
     if: github.event_name == 'schedule'
 
     steps:
@@ -88,12 +77,10 @@ jobs:
           APCA_API_KEY_1: ${{ secrets.APCA_API_KEY_1 }}
           APCA_API_SECRET_1: ${{ secrets.APCA_API_SECRET_1 }}
           APCA_BASE_URL_1: ${{ secrets.APCA_BASE_URL_1 }}
-
           APCA_API_KEY_2: ${{ secrets.APCA_API_KEY_2 }}
           APCA_API_SECRET_2: ${{ secrets.APCA_API_SECRET_2 }}
           APCA_BASE_URL_2: ${{ secrets.APCA_BASE_URL_2 }}
-
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
           EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
         run: |
-          python report.py
+          python report.py 
