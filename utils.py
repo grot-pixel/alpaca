@@ -1,50 +1,94 @@
-import pandas as pd
+from __future__ import annotations
+
 import numpy as np
+import pandas as pd
 
 
-def rsi(series: pd.Series, period: int = 14) -> pd.Series:
+# ============================================================
+# RSI
+# ============================================================
+
+def rsi(
+    series: pd.Series,
+    period: int = 14,
+) -> pd.Series:
     delta = series.diff()
 
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
-    avg_gain = gain.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
-    avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    avg_gain = gain.ewm(
+        alpha=1 / period,
+        adjust=False,
+        min_periods=period,
+    ).mean()
 
-    rs = avg_gain / avg_loss.replace(0, np.nan)
+    avg_loss = loss.ewm(
+        alpha=1 / period,
+        adjust=False,
+        min_periods=period,
+    ).mean()
 
-    return 100 - (100 / (1 + rs))
+    rs = (
+        avg_gain
+        / avg_loss.replace(0, np.nan)
+    )
+
+    result = 100 - (
+        100 / (1 + rs)
+    )
+
+    # A continuously rising series has no losses,
+    # therefore RSI should be 100 rather than NaN.
+    result = result.where(
+        ~(
+            (avg_loss == 0)
+            & (avg_gain > 0)
+        ),
+        100.0,
+    )
+
+    return result
 
 
-def atr(data: pd.DataFrame, period: int = 14) -> pd.Series:
+# ============================================================
+# ATR
+# ============================================================
+
+def atr(
+    data: pd.DataFrame,
+    period: int = 14,
+) -> pd.Series:
     high = data["high"]
     low = data["low"]
     close = data["close"]
 
-    prev_close = close.shift(1)
+    previous_close = close.shift(1)
 
-    tr = pd.concat(
+    true_range = pd.concat(
         [
             high - low,
-            (high - prev_close).abs(),
-            (low - prev_close).abs(),
+            (high - previous_close).abs(),
+            (low - previous_close).abs(),
         ],
         axis=1,
     ).max(axis=1)
 
-    return tr.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    return true_range.ewm(
+        alpha=1 / period,
+        adjust=False,
+        min_periods=period,
+    ).mean()
 
 
-def adx(data: pd.DataFrame, period: int = 14):
-    """
-    Wilder-style ADX plus directional indicators.
+# ============================================================
+# ADX / DI
+# ============================================================
 
-    Returns:
-        adx
-        plus_di
-        minus_di
-    """
-
+def adx(
+    data: pd.DataFrame,
+    period: int = 14,
+):
     high = data["high"]
     low = data["low"]
     close = data["close"]
@@ -53,27 +97,29 @@ def adx(data: pd.DataFrame, period: int = 14):
     down_move = -low.diff()
 
     plus_dm = up_move.where(
-        (up_move > down_move) & (up_move > 0),
+        (up_move > down_move)
+        & (up_move > 0),
         0.0,
     )
 
     minus_dm = down_move.where(
-        (down_move > up_move) & (down_move > 0),
+        (down_move > up_move)
+        & (down_move > 0),
         0.0,
     )
 
-    prev_close = close.shift(1)
+    previous_close = close.shift(1)
 
-    tr = pd.concat(
+    true_range = pd.concat(
         [
             high - low,
-            (high - prev_close).abs(),
-            (low - prev_close).abs(),
+            (high - previous_close).abs(),
+            (low - previous_close).abs(),
         ],
         axis=1,
     ).max(axis=1)
 
-    atr_value = tr.ewm(
+    atr_value = true_range.ewm(
         alpha=1 / period,
         adjust=False,
         min_periods=period,
@@ -103,7 +149,9 @@ def adx(data: pd.DataFrame, period: int = 14):
         / atr_value.replace(0, np.nan)
     )
 
-    di_sum = (plus_di + minus_di).replace(0, np.nan)
+    di_sum = (
+        plus_di + minus_di
+    ).replace(0, np.nan)
 
     dx = (
         100
@@ -117,40 +165,93 @@ def adx(data: pd.DataFrame, period: int = 14):
         min_periods=period,
     ).mean()
 
-    return adx_value, plus_di, minus_di
+    return (
+        adx_value,
+        plus_di,
+        minus_di,
+    )
 
 
-def vwap(data: pd.DataFrame) -> pd.Series:
+# ============================================================
+# SESSION VWAP
+# ============================================================
+
+def vwap(
+    data: pd.DataFrame,
+) -> pd.Series:
     """
-    True session VWAP.
+    Session VWAP.
 
-    VWAP resets at the beginning of every trading session.
+    VWAP resets at each New York calendar session.
     """
 
     df = data.copy()
 
     typical_price = (
-        df["high"] +
-        df["low"] +
-        df["close"]
+        df["high"]
+        + df["low"]
+        + df["close"]
     ) / 3.0
 
-    volume_price = typical_price * df["volume"]
+    volume_price = (
+        typical_price
+        * df["volume"]
+    )
 
-    # Convert timestamps to session dates.
-    if isinstance(df.index, pd.DatetimeIndex):
-        session = df.index.tz_convert("America/New_York").date
+    if isinstance(
+        df.index,
+        pd.DatetimeIndex,
+    ):
+        if df.index.tz is None:
+            index = df.index.tz_localize(
+                "UTC"
+            )
+        else:
+            index = df.index
+
+        session = pd.Series(
+            index.tz_convert(
+                "America/New_York"
+            ).date,
+            index=df.index,
+        )
     else:
         session = pd.Series(
-            pd.to_datetime(df.index).date,
+            pd.to_datetime(
+                df.index,
+                utc=True,
+            )
+            .tz_convert(
+                "America/New_York"
+            )
+            .date,
             index=df.index,
         )
 
-    cumulative_pv = volume_price.groupby(session).cumsum()
-    cumulative_volume = df["volume"].groupby(session).cumsum()
+    cumulative_pv = (
+        volume_price
+        .groupby(session)
+        .cumsum()
+    )
 
-    return cumulative_pv / cumulative_volume.replace(0, np.nan)
+    cumulative_volume = (
+        df["volume"]
+        .groupby(session)
+        .cumsum()
+    )
 
+    return (
+        cumulative_pv
+        / cumulative_volume.replace(
+            0,
+            np.nan,
+        )
+    )
+
+
+# ============================================================
+# MACD
+# ============================================================
 
 def macd(
     series: pd.Series,
@@ -170,7 +271,9 @@ def macd(
         min_periods=slow,
     ).mean()
 
-    macd_line = fast_ema - slow_ema
+    macd_line = (
+        fast_ema - slow_ema
+    )
 
     signal_line = macd_line.ewm(
         span=signal,
@@ -178,10 +281,20 @@ def macd(
         min_periods=signal,
     ).mean()
 
-    histogram = macd_line - signal_line
+    histogram = (
+        macd_line - signal_line
+    )
 
-    return macd_line, signal_line, histogram
+    return (
+        macd_line,
+        signal_line,
+        histogram,
+    )
 
+
+# ============================================================
+# SIGNAL ENGINE
+# ============================================================
 
 def generate_signals(
     data: pd.DataFrame,
@@ -189,39 +302,77 @@ def generate_signals(
     return_stats: bool = False,
 ):
     """
-    V3 trend-pullback strategy.
+    V4 trend-pullback strategy.
 
-    LONG ENTRY:
+    BUY conditions:
+        1. ADX trend confirmation
+        2. +DI directional confirmation
+        3. SMA trend
+        4. Price above VWAP
+        5. RSI pullback/recovery
+        6. MACD positive and improving
+        7. ATR volatility filter
 
-        1. ADX says the market is actually trending.
-        2. +DI > -DI confirms bullish directional pressure.
-        3. Fast SMA > slow SMA confirms trend.
-        4. Price > VWAP confirms intraday strength.
-        5. RSI recently pulled back.
-        6. RSI is now recovering.
-        7. MACD histogram is positive and improving.
-        8. ATR is within acceptable volatility bounds.
+    SELL conditions:
+        1. SMA downtrend
+        2. -DI directional confirmation
+        3. Price below VWAP
+        4. RSI rolling over
+        5. MACD negative and deteriorating
 
-    EXIT:
-
-        Trend / momentum reversal.
-
-    The strategy remains long-only.
+    This remains long-only.
     """
+
+    if data is None or data.empty:
+        raise ValueError(
+            "No market data supplied"
+        )
+
+    if len(data) < 3:
+        raise ValueError(
+            "At least 3 bars are required"
+        )
 
     df = data.copy()
 
-    # -------------------------
-    # Indicators
-    # -------------------------
+    required_columns = {
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+    }
 
-    df["sma_fast"] = df["close"].rolling(
-        config["sma_fast"]
-    ).mean()
+    missing = (
+        required_columns
+        - set(df.columns)
+    )
 
-    df["sma_slow"] = df["close"].rolling(
-        config["sma_slow"]
-    ).mean()
+    if missing:
+        raise ValueError(
+            "Missing market-data columns: "
+            + ", ".join(sorted(missing))
+        )
+
+    # --------------------------------------------------------
+    # INDICATORS
+    # --------------------------------------------------------
+
+    df["sma_fast"] = (
+        df["close"]
+        .rolling(
+            config["sma_fast"]
+        )
+        .mean()
+    )
+
+    df["sma_slow"] = (
+        df["close"]
+        .rolling(
+            config["sma_slow"]
+        )
+        .mean()
+    )
 
     df["rsi"] = rsi(
         df["close"],
@@ -255,37 +406,67 @@ def generate_signals(
         config["macd_signal"],
     )
 
-    # -------------------------
-    # Latest / previous bars
-    # -------------------------
+    # --------------------------------------------------------
+    # LATEST DATA
+    # --------------------------------------------------------
 
     latest = df.iloc[-1]
     previous = df.iloc[-2]
 
-    price = float(latest["close"])
+    price = float(
+        latest["close"]
+    )
 
-    sma_fast = float(latest["sma_fast"])
-    sma_slow = float(latest["sma_slow"])
+    sma_fast = float(
+        latest["sma_fast"]
+    )
 
-    rsi_now = float(latest["rsi"])
-    rsi_prev = float(previous["rsi"])
+    sma_slow = float(
+        latest["sma_slow"]
+    )
 
-    vwap_now = float(latest["vwap"])
+    rsi_now = float(
+        latest["rsi"]
+    )
 
-    atr_now = float(latest["atr"])
+    rsi_prev = float(
+        previous["rsi"]
+    )
 
-    adx_now = float(latest["adx"])
-    plus_di = float(latest["plus_di"])
-    minus_di = float(latest["minus_di"])
+    vwap_now = float(
+        latest["vwap"]
+    )
 
-    macd_hist = float(latest["macd_hist"])
-    macd_hist_prev = float(previous["macd_hist"])
+    atr_now = float(
+        latest["atr"]
+    )
 
-    # -------------------------
-    # NaN guard
-    # -------------------------
+    adx_now = float(
+        latest["adx"]
+    )
+
+    plus_di = float(
+        latest["plus_di"]
+    )
+
+    minus_di = float(
+        latest["minus_di"]
+    )
+
+    macd_hist = float(
+        latest["macd_hist"]
+    )
+
+    macd_hist_prev = float(
+        previous["macd_hist"]
+    )
+
+    # --------------------------------------------------------
+    # NAN / INVALID DATA GUARD
+    # --------------------------------------------------------
 
     values = [
+        price,
         sma_fast,
         sma_slow,
         rsi_now,
@@ -299,58 +480,92 @@ def generate_signals(
         macd_hist_prev,
     ]
 
-    if any(pd.isna(x) for x in values):
-
+    if any(
+        pd.isna(value)
+        or not np.isfinite(value)
+        for value in values
+    ):
         stats = {
+            "price": price,
             "sma_f": sma_fast,
             "sma_s": sma_slow,
             "rsi": rsi_now,
             "vwap": vwap_now,
             "atr": atr_now,
+            "atr_pct": np.nan,
             "adx": adx_now,
             "plus_di": plus_di,
             "minus_di": minus_di,
             "macd_hist": macd_hist,
-            "atr_pct": np.nan,
+            "bullish_score": 0,
+            "bearish_score": 0,
+            "buy_threshold": config[
+                "buy_signal_threshold"
+            ],
+            "sell_threshold": config[
+                "sell_signal_threshold"
+            ],
+            "data_ready": False,
         }
 
-        return (None, stats) if return_stats else None
+        return (
+            (None, stats)
+            if return_stats
+            else None
+        )
 
-    # -------------------------
-    # Trend / regime
-    # -------------------------
+    # --------------------------------------------------------
+    # TREND / REGIME
+    # --------------------------------------------------------
 
-    trending = adx_now >= config["adx_min"]
+    trending = (
+        adx_now
+        >= config["adx_min"]
+    )
 
     bullish_direction = (
         plus_di > minus_di
-        and (plus_di - minus_di)
-        >= config["min_di_spread"]
+        and (
+            plus_di - minus_di
+        ) >= config["min_di_spread"]
     )
 
     bearish_direction = (
         minus_di > plus_di
-        and (minus_di - plus_di)
-        >= config["min_di_spread"]
+        and (
+            minus_di - plus_di
+        ) >= config["min_di_spread"]
     )
 
-    uptrend = sma_fast > sma_slow
-    downtrend = sma_fast < sma_slow
+    uptrend = (
+        sma_fast > sma_slow
+    )
 
-    above_vwap = price > vwap_now
-    below_vwap = price < vwap_now
+    downtrend = (
+        sma_fast < sma_slow
+    )
 
-    # -------------------------
-    # RSI pullback
-    # -------------------------
+    above_vwap = (
+        price > vwap_now
+    )
+
+    below_vwap = (
+        price < vwap_now
+    )
+
+    # --------------------------------------------------------
+    # RSI
+    # --------------------------------------------------------
 
     rsi_was_low = (
-        rsi_prev <= config["rsi_pullback_max"]
+        rsi_prev
+        <= config["rsi_pullback_max"]
     )
 
     rsi_recovering = (
         rsi_now > rsi_prev
-        and rsi_now >= config["rsi_recovery_min"]
+        and rsi_now
+        >= config["rsi_recovery_min"]
     )
 
     bullish_rsi = (
@@ -359,29 +574,34 @@ def generate_signals(
     )
 
     bearish_rsi = (
-        rsi_prev >= config["rsi_sell_min"]
+        rsi_prev
+        >= config["rsi_sell_min"]
         and rsi_now < rsi_prev
     )
 
-    # -------------------------
-    # MACD momentum
-    # -------------------------
+    # --------------------------------------------------------
+    # MACD
+    # --------------------------------------------------------
 
     bullish_macd = (
         macd_hist > 0
-        and macd_hist > macd_hist_prev
+        and macd_hist
+        > macd_hist_prev
     )
 
     bearish_macd = (
         macd_hist < 0
-        and macd_hist < macd_hist_prev
+        and macd_hist
+        < macd_hist_prev
     )
 
-    # -------------------------
-    # Volatility filter
-    # -------------------------
+    # --------------------------------------------------------
+    # VOLATILITY
+    # --------------------------------------------------------
 
-    atr_pct = atr_now / price
+    atr_pct = (
+        atr_now / price
+    )
 
     volatility_ok = (
         config["min_atr_pct"]
@@ -389,9 +609,9 @@ def generate_signals(
         <= config["max_atr_pct"]
     )
 
-    # -------------------------
-    # Signals
-    # -------------------------
+    # --------------------------------------------------------
+    # SCORES
+    # --------------------------------------------------------
 
     buy_conditions = [
         trending,
@@ -411,18 +631,36 @@ def generate_signals(
         bearish_macd,
     ]
 
-    bullish_score = sum(bool(x) for x in buy_conditions)
-    bearish_score = sum(bool(x) for x in sell_conditions)
+    bullish_score = sum(
+        bool(value)
+        for value in buy_conditions
+    )
+
+    bearish_score = sum(
+        bool(value)
+        for value in sell_conditions
+    )
 
     signal = None
 
-    if bullish_score >= config["buy_signal_threshold"]:
+    if (
+        bullish_score
+        >= config["buy_signal_threshold"]
+    ):
         signal = "buy"
 
-    elif bearish_score >= config["sell_signal_threshold"]:
+    elif (
+        bearish_score
+        >= config["sell_signal_threshold"]
+    ):
         signal = "sell"
 
+    # --------------------------------------------------------
+    # STATS
+    # --------------------------------------------------------
+
     stats = {
+        "price": price,
         "sma_f": sma_fast,
         "sma_s": sma_slow,
         "rsi": rsi_now,
@@ -435,6 +673,31 @@ def generate_signals(
         "macd_hist": macd_hist,
         "bullish_score": bullish_score,
         "bearish_score": bearish_score,
+        "buy_threshold": config[
+            "buy_signal_threshold"
+        ],
+        "sell_threshold": config[
+            "sell_signal_threshold"
+        ],
+        "data_ready": True,
+        "conditions": {
+            "trending": trending,
+            "bullish_direction": bullish_direction,
+            "uptrend": uptrend,
+            "above_vwap": above_vwap,
+            "bullish_rsi": bullish_rsi,
+            "bullish_macd": bullish_macd,
+            "volatility_ok": volatility_ok,
+            "downtrend": downtrend,
+            "bearish_direction": bearish_direction,
+            "below_vwap": below_vwap,
+            "bearish_rsi": bearish_rsi,
+            "bearish_macd": bearish_macd,
+        },
     }
 
-    return (signal, stats) if return_stats else signal
+    return (
+        (signal, stats)
+        if return_stats
+        else signal
+    )
