@@ -9,34 +9,34 @@
   ],
 
   "max_open_positions": 4,
-
   "max_position_pct": 0.15,
 
   "risk_per_trade_pct": 0.005,
-
   "max_portfolio_risk": 0.02,
 
   "max_correlation_exposure": 0.35,
 
   "correlation_groups": {
-    "mega_cap_growth": [
-      "AAPL",
+    "semiconductors": [
       "NVDA",
       "AMD",
-      "TSLA"
-    ],
-
-    "leveraged_growth": [
-      "TQQQ",
       "SOXL"
+    ],
+    "broad_growth": [
+      "TQQQ",
+      "TSLA",
+      "AAPL"
     ]
   },
+
+  "buy_signal_threshold": 4,
+  "sell_signal_threshold": 3,
 
   "sma_fast": 8,
   "sma_slow": 21,
 
   "rsi_period": 14,
-  "rsi_pullback_max": 45,
+  "rsi_pullback_max": 48,
   "rsi_recovery_min": 42,
   "rsi_sell_min": 55,
 
@@ -52,7 +52,6 @@
 
   "atr_stop_mult": 2.0,
   "atr_take_profit_mult": 4.0,
-
   "minimum_reward_risk": 1.75,
 
   "min_atr_pct": 0.0025,
@@ -66,6 +65,10 @@
   "trade_end_hour": 15,
   "trade_end_minute": 30,
 
-  "data_lookback_days": 10,
-  "data_max_bars": 3000
-}
+  "force_flat_at_close": true,
+  "flatten_minutes_before_close": 5,
+
+  "data_feed": "iex",
+  "data_lookback_days": 5,
+  "data_max_bars": 1500
+} 
