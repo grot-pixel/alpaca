@@ -41,46 +41,16 @@ jobs:
       - name: Validate configuration
         run: |
           python -m json.tool config.json > /dev/null
+          echo "Configuration valid."
 
       - name: Run trading bot
         env:
           APCA_API_KEY_1: ${{ secrets.APCA_API_KEY_1 }}
           APCA_API_SECRET_1: ${{ secrets.APCA_API_SECRET_1 }}
           APCA_BASE_URL_1: ${{ secrets.APCA_BASE_URL_1 }}
+
           APCA_API_KEY_2: ${{ secrets.APCA_API_KEY_2 }}
           APCA_API_SECRET_2: ${{ secrets.APCA_API_SECRET_2 }}
           APCA_BASE_URL_2: ${{ secrets.APCA_BASE_URL_2 }}
         run: |
-          python bot.py
-
-  report:
-    name: Daily Performance Report
-    runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Send daily report
-        env:
-          APCA_API_KEY_1: ${{ secrets.APCA_API_KEY_1 }}
-          APCA_API_SECRET_1: ${{ secrets.APCA_API_SECRET_1 }}
-          APCA_BASE_URL_1: ${{ secrets.APCA_BASE_URL_1 }}
-          APCA_API_KEY_2: ${{ secrets.APCA_API_KEY_2 }}
-          APCA_API_SECRET_2: ${{ secrets.APCA_API_SECRET_2 }}
-          APCA_BASE_URL_2: ${{ secrets.APCA_BASE_URL_2 }}
-          EMAIL_USER: ${{ secrets.EMAIL_USER }}
-          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
-        run: |
-          python report.py 
+          python bot.py 
