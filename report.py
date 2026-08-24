@@ -1,162 +1,437 @@
 """
-report.py — Daily performance report via email
-===============================================
-Runs once per day (typically at market close via GitHub Actions).
-Reads all accounts and sends a formatted summary email.
+Daily Alpaca performance report.
+
+Supports up to two accounts and sends the report through Gmail
+when EMAIL_USER and EMAIL_PASS are configured.
 """
+
+from __future__ import annotations
 
 import os
 import smtplib
-from email.message import EmailMessage
 from datetime import datetime, timezone
+from email.message import EmailMessage
+from zoneinfo import ZoneInfo
+
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import GetOrdersRequest
 from alpaca.trading.enums import QueryOrderStatus
+from alpaca.trading.requests import GetOrdersRequest
 
 
-# ─── EMAIL ───────────────────────────────────────────────────────────────────
+EASTERN = ZoneInfo("America/New_York")
 
-def send_email(subject: str, body: str):
-    user     = os.getenv("EMAIL_USER")
+
+# ============================================================
+# EMAIL
+# ============================================================
+
+def send_email(
+    subject: str,
+    body: str,
+) -> None:
+    user = os.getenv("EMAIL_USER")
     password = os.getenv("EMAIL_PASS")
 
     if not user or not password:
-        print("⚠️  EMAIL_USER / EMAIL_PASS not set. Skipping email send.")
+        print(
+            "⚠️ EMAIL_USER / EMAIL_PASS not set. "
+            "Skipping email."
+        )
         print(body)
         return
 
-    msg = EmailMessage()
-    msg.set_content(body)
-    msg["Subject"] = subject
-    msg["From"]    = user
-    msg["To"]      = user
+    message = EmailMessage()
+    message.set_content(body)
+    message["Subject"] = subject
+    message["From"] = user
+    message["To"] = user
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(user, password)
-        smtp.send_message(msg)
+    with smtplib.SMTP_SSL(
+        "smtp.gmail.com",
+        465,
+    ) as smtp:
+        smtp.login(
+            user,
+            password,
+        )
+        smtp.send_message(message)
 
 
-# ─── REPORT BUILDER ──────────────────────────────────────────────────────────
+# ============================================================
+# FORMATTING
+# ============================================================
 
-def build_account_report(name: str, api_key: str, api_secret: str, base_url: str) -> str:
-    is_paper = "paper" in base_url
-    client   = TradingClient(api_key, api_secret, paper=is_paper)
-    mode     = "Paper" if is_paper else "⚠️  LIVE"
+def format_qty(qty: float) -> str:
+    if abs(qty - round(qty)) < 1e-8:
+        return f"{int(round(qty))}"
 
-    lines = [f"  {'─'*30}", f"  {name} ({mode})", f"  {'─'*30}"]
+    return f"{qty:.6f}".rstrip("0").rstrip(".")
 
-    # ── Account snapshot ─────────────────────────────────────────────────────
+
+def format_local_time(
+    timestamp,
+) -> str:
+    if timestamp is None:
+        return "?"
+
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(
+            tzinfo=timezone.utc
+        )
+
+    return timestamp.astimezone(
+        EASTERN
+    ).strftime("%I:%M:%S %p ET")
+
+
+# ============================================================
+# ACCOUNT REPORT
+# ============================================================
+
+def build_account_report(
+    name: str,
+    api_key: str,
+    api_secret: str,
+    base_url: str,
+) -> str:
+    is_paper = (
+        "paper"
+        in base_url.lower()
+    )
+
+    client = TradingClient(
+        api_key,
+        api_secret,
+        paper=is_paper,
+    )
+
+    mode = (
+        "PAPER"
+        if is_paper
+        else "⚠️ LIVE"
+    )
+
+    lines = [
+        "─" * 52,
+        f"{name} ({mode})",
+        "─" * 52,
+    ]
+
+    # --------------------------------------------------------
+    # ACCOUNT
+    # --------------------------------------------------------
+
     try:
-        acct       = client.get_account()
-        equity     = float(acct.equity)
-        prev       = float(acct.last_equity)
-        pnl        = equity - prev
-        pnl_pct    = (pnl / prev * 100) if prev else 0
-        cash       = float(acct.cash)
-        buying_pow = float(acct.buying_power)
+        account = client.get_account()
 
-        pnl_icon = "📈" if pnl >= 0 else "📉"
-        lines += [
-            f"  Equity:       ${equity:>12,.2f}",
-            f"  Prior Close:  ${prev:>12,.2f}",
-            f"  Day P&L:      ${pnl:>+12.2f}  ({pnl_pct:+.2f}%)  {pnl_icon}",
-            f"  Cash:         ${cash:>12,.2f}",
-            f"  Buying Power: ${buying_pow:>12,.2f}",
-        ]
-    except Exception as e:
-        lines.append(f"  ❌ Account error: {e}")
+        equity = float(account.equity)
+        previous = float(
+            account.last_equity
+        )
+
+        pnl = equity - previous
+
+        pnl_pct = (
+            pnl / previous * 100
+            if previous
+            else 0.0
+        )
+
+        cash = float(account.cash)
+        buying_power = float(
+            account.buying_power
+        )
+
+        icon = (
+            "📈"
+            if pnl >= 0
+            else "📉"
+        )
+
+        lines.extend(
+            [
+                f"Equity:       ${equity:,.2f}",
+                f"Prior close:  ${previous:,.2f}",
+                (
+                    f"Day P&L:      "
+                    f"${pnl:+,.2f} "
+                    f"({pnl_pct:+.2f}%) {icon}"
+                ),
+                f"Cash:         ${cash:,.2f}",
+                (
+                    f"Buying power: "
+                    f"${buying_power:,.2f}"
+                ),
+            ]
+        )
+
+    except Exception as exc:
+        lines.append(
+            f"❌ Account error: {exc}"
+        )
         return "\n".join(lines)
 
-    # ── Open positions ───────────────────────────────────────────────────────
-    lines.append("")
-    try:
-        positions = client.get_all_positions()
-        if positions:
-            lines.append(f"  Open Positions ({len(positions)}):")
-            for p in positions:
-                sym        = p.symbol
-                qty        = int(float(p.qty))
-                avg        = float(p.avg_entry_price)
-                cur        = float(p.current_price)
-                unreal     = float(p.unrealized_pl)
-                unreal_pct = float(p.unrealized_plpc) * 100
-                icon       = "🟢" if unreal >= 0 else "🔴"
-                lines.append(
-                    f"  {icon} {sym:<6}  {qty:>4} shares  "
-                    f"avg ${avg:.2f} → ${cur:.2f}  "
-                    f"P&L: ${unreal:+.2f} ({unreal_pct:+.2f}%)"
-                )
-        else:
-            lines.append("  Open Positions: none")
-    except Exception as e:
-        lines.append(f"  Positions error: {e}")
+    # --------------------------------------------------------
+    # POSITIONS
+    # --------------------------------------------------------
 
-    # ── Today's filled orders ────────────────────────────────────────────────
     lines.append("")
+
     try:
-        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00Z")
-        req = GetOrdersRequest(status=QueryOrderStatus.CLOSED, after=today_str, limit=50)
-        orders = client.get_orders(req)
-        filled = [o for o in orders if o.status.value == "filled"]
+        positions = (
+            client.get_all_positions()
+        )
+
+        if positions:
+            lines.append(
+                f"Open positions "
+                f"({len(positions)}):"
+            )
+
+            for position in positions:
+                symbol = position.symbol
+                qty = float(position.qty)
+
+                avg = float(
+                    position.avg_entry_price
+                )
+
+                current = float(
+                    position.current_price
+                )
+
+                unrealized = float(
+                    position.unrealized_pl
+                )
+
+                unrealized_pct = (
+                    float(
+                        position.unrealized_plpc
+                    )
+                    * 100
+                )
+
+                icon = (
+                    "🟢"
+                    if unrealized >= 0
+                    else "🔴"
+                )
+
+                lines.append(
+                    (
+                        f"{icon} {symbol:<6} "
+                        f"{format_qty(qty):>10} "
+                        f"shares | "
+                        f"${avg:.2f} → "
+                        f"${current:.2f} | "
+                        f"P&L ${unrealized:+.2f} "
+                        f"({unrealized_pct:+.2f}%)"
+                    )
+                )
+
+        else:
+            lines.append(
+                "Open positions: none"
+            )
+
+    except Exception as exc:
+        lines.append(
+            f"Positions error: {exc}"
+        )
+
+    # --------------------------------------------------------
+    # FILLED ORDERS
+    # --------------------------------------------------------
+
+    lines.append("")
+
+    try:
+        now_utc = datetime.now(
+            timezone.utc
+        )
+
+        start_of_day = (
+            now_utc
+            .replace(
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+        )
+
+        request = GetOrdersRequest(
+            status=QueryOrderStatus.CLOSED,
+            after=start_of_day,
+            limit=100,
+        )
+
+        orders = client.get_orders(
+            filter=request
+        )
+
+        filled = [
+            order
+            for order in orders
+            if order.status.value
+            == "filled"
+        ]
 
         if filled:
-            lines.append(f"  Today's Fills ({len(filled)}):")
-            for o in filled:
-                side  = o.side.value.upper()
-                sym   = o.symbol
-                qty   = int(float(o.filled_qty)) if o.filled_qty else 0
-                price = float(o.filled_avg_price) if o.filled_avg_price else 0
-                ts    = o.filled_at.strftime("%H:%M") if o.filled_at else "?"
-                icon  = "↑" if side == "BUY" else "↓"
-                lines.append(f"  {icon} {ts}  {side:<4} {qty:>4}x {sym:<6} @ ${price:.2f}")
+            lines.append(
+                f"Today's fills "
+                f"({len(filled)}):"
+            )
+
+            for order in sorted(
+                filled,
+                key=lambda item: (
+                    item.filled_at
+                    or datetime.min.replace(
+                        tzinfo=timezone.utc
+                    )
+                ),
+            ):
+                side = (
+                    order.side.value.upper()
+                )
+
+                symbol = order.symbol
+
+                qty = (
+                    float(order.filled_qty)
+                    if order.filled_qty
+                    else 0.0
+                )
+
+                price = (
+                    float(
+                        order.filled_avg_price
+                    )
+                    if order.filled_avg_price
+                    else 0.0
+                )
+
+                timestamp = (
+                    format_local_time(
+                        order.filled_at
+                    )
+                )
+
+                icon = (
+                    "↑"
+                    if side == "BUY"
+                    else "↓"
+                )
+
+                lines.append(
+                    (
+                        f"{icon} "
+                        f"{timestamp} "
+                        f"{side:<4} "
+                        f"{format_qty(qty):>10}x "
+                        f"{symbol:<6} "
+                        f"@ ${price:.2f}"
+                    )
+                )
+
         else:
-            lines.append("  Today's Fills: none")
-    except Exception as e:
-        lines.append(f"  Orders error: {e}")
+            lines.append(
+                "Today's fills: none"
+            )
+
+    except Exception as exc:
+        lines.append(
+            f"Orders error: {exc}"
+        )
 
     return "\n".join(lines)
 
 
+# ============================================================
+# FULL REPORT
+# ============================================================
+
 def get_report() -> str:
-    now     = datetime.now(timezone.utc)
-    header  = [
-        "=" * 45,
-        "  📊 ALPACA BOT — DAILY PERFORMANCE REPORT",
-        f"  {now.strftime('%A, %B %d %Y  %I:%M %p UTC')}",
-        "=" * 45,
+    now = datetime.now(
+        timezone.utc
+    ).astimezone(EASTERN)
+
+    header = [
+        "=" * 52,
+        "📊 ALPACA BOT — DAILY PERFORMANCE REPORT",
+        now.strftime(
+            "%A, %B %d %Y  %I:%M:%S %p ET"
+        ),
+        "=" * 52,
         "",
     ]
+
     sections = []
 
-    for i in [1, 2]:
-        key    = os.getenv(f"APCA_API_KEY_{i}")
-        secret = os.getenv(f"APCA_API_SECRET_{i}")
-        url    = os.getenv(f"APCA_BASE_URL_{i}", "https://paper-api.alpaca.markets")
+    for index in (1, 2):
+        key = os.getenv(
+            f"APCA_API_KEY_{index}"
+        )
+
+        secret = os.getenv(
+            f"APCA_API_SECRET_{index}"
+        )
+
+        url = os.getenv(
+            f"APCA_BASE_URL_{index}",
+            "https://paper-api.alpaca.markets",
+        )
 
         if not key or not secret:
             continue
 
-        section = build_account_report(f"Account {i}", key, secret, url)
-        sections.append(section)
+        sections.append(
+            build_account_report(
+                f"Account {index}",
+                key,
+                secret,
+                url,
+            )
+        )
 
     footer = [
         "",
-        "─" * 45,
-        "  ⚠️  Not financial advice. Paper trade first.",
-        "=" * 45,
+        "─" * 52,
+        "⚠️ Automated trading software. "
+        "Paper trade and validate before live use.",
+        "=" * 52,
     ]
 
-    return "\n".join(header + sections + footer)
+    return "\n".join(
+        header
+        + sections
+        + footer
+    )
 
 
-# ─── ENTRY POINT ─────────────────────────────────────────────────────────────
+# ============================================================
+# MAIN
+# ============================================================
 
 if __name__ == "__main__":
     try:
-        content = get_report()
-        print(content)
-        send_email("📈 Daily Alpaca Bot Report", content)
-        print("\n✅ Report sent successfully!")
-    except Exception as e:
-        print(f"❌ Report failed: {e}")
+        report = get_report()
+
+        print(report)
+
+        send_email(
+            "📈 Daily Alpaca Bot Report",
+            report,
+        )
+
+        print(
+            "\n✅ Report completed."
+        )
+
+    except Exception as exc:
+        print(
+            f"❌ Report failed: "
+            f"{type(exc).__name__}: {exc}"
+        )
         raise
