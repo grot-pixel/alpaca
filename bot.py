@@ -635,26 +635,40 @@ def calculate_position_size(
 # ============================================================
 
 def submit_entry(
-    trading_client: TradingClient,
-    symbol: str,
-    qty: float,
-    price: float,
-    atr_value: float,
-    config: dict[str, Any],
+    trading_client,
+    symbol,
+    qty,
+    price,
+    atr_value,
+    config,
 ):
+    """
+    Submit a fractional/simple market entry.
+
+    Alpaca does not allow fractional quantities inside
+    bracket orders, so entry and exits are handled separately.
+    """
+
     stop_distance = (
         atr_value
-        * config["atr_stop_mult"]
+        * config.get(
+            "atr_stop_mult",
+            2.0,
+        )
     )
 
     target_distance = (
         atr_value
-        * config["atr_take_profit_mult"]
+        * config.get(
+            "atr_take_profit_mult",
+            4.0,
+        )
     )
 
     if stop_distance <= 0:
         print(
-            f"  ⏸ {symbol}: invalid stop distance"
+            f"  ⏸ {symbol}: "
+            "invalid stop distance"
         )
         return None
 
@@ -668,61 +682,142 @@ def submit_entry(
         2,
     )
 
-    if stop_price <= 0:
-        print(
-            f"  ⏸ {symbol}: calculated stop <= 0"
-        )
-        return None
-
     actual_rr = (
         target_distance
         / stop_distance
     )
 
-    minimum_rr = config["minimum_reward_risk"]
+    minimum_rr = config.get(
+        "minimum_reward_risk",
+        1.75,
+    )
 
     if actual_rr < minimum_rr:
+
         print(
-            f"  ⏸ {symbol}: R/R too low "
+            f"  ⏸ {symbol}: "
+            f"R/R too low "
             f"({actual_rr:.2f})"
         )
+
         return None
 
     print(
-        f"  🟢 BUY {qty:.6f} {symbol} "
-        f"@ ${price:.2f}"
+        f"  🟢 BUY "
+        f"{qty:.6f} {symbol} "
+        f"@ ~${price:.2f}"
     )
 
     print(
-        f"     SL ${stop_price:.2f} | "
-        f"TP ${target_price:.2f} | "
+        f"     Planned SL ${stop_price:.2f} "
+        f"TP ${target_price:.2f} "
         f"R/R {actual_rr:.2f}"
     )
 
+    # IMPORTANT:
+    # Fractional shares must use a SIMPLE order.
     request = MarketOrderRequest(
         symbol=symbol,
         qty=qty,
         side=OrderSide.BUY,
         time_in_force=TimeInForce.DAY,
-        order_class=OrderClass.BRACKET,
-        take_profit=TakeProfitRequest(
-            limit_price=target_price
-        ),
-        stop_loss=StopLossRequest(
-            stop_price=stop_price
-        ),
     )
 
-    order = trading_client.submit_order(
-        order_data=request
-    )
+    try:
+
+        order = trading_client.submit_order(
+            order_data=request
+        )
+
+        print(
+            f"  ✅ Entry submitted: "
+            f"{order.id}"
+        )
+
+        return {
+            "order": order,
+            "stop_price": stop_price,
+            "target_price": target_price,
+            "qty": qty,
+        }
+
+    except Exception as e:
+
+        print(
+            f"  ❌ Entry failed for "
+            f"{symbol}: {e}"
+        )
+
+        return None
+
+def wait_for_order_fill(
+    trading_client,
+    order_id,
+    timeout_seconds=30,
+):
+    """
+    Wait for an entry order to fill.
+    """
+
+    import time
+
+    start = time.time()
+
+    while (
+        time.time() - start
+        < timeout_seconds
+    ):
+
+        try:
+
+            order = (
+                trading_client.get_order_by_id(
+                    order_id
+                )
+            )
+
+            status = str(
+                order.status
+            ).lower()
+
+            if status == "filled":
+
+                print(
+                    f"  ✅ Entry filled: "
+                    f"{order.filled_qty} shares "
+                    f"@ ${order.filled_avg_price}"
+                )
+
+                return order
+
+            if status in (
+                "canceled",
+                "expired",
+                "rejected",
+            ):
+
+                print(
+                    f"  ❌ Entry "
+                    f"{status}"
+                )
+
+                return None
+
+        except Exception as e:
+
+            print(
+                f"  ⚠️ Error checking "
+                f"fill: {e}"
+            )
+
+        time.sleep(1)
 
     print(
-        f"  ✅ Entry order submitted: "
-        f"{order.id}"
+        "  ⚠️ Entry did not fill "
+        "within timeout"
     )
 
-    return order
+    return None
 
 
 def exit_position(
